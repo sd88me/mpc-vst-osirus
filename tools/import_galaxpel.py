@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Read the control positions of gearmulator's "Galaxpel" Osirus skin (skin/galaxpel/VirusC_Galaxpel.rml, GPL-3.0) and write
-skin/galaxpel/pages.json: per page, each control's key (our params.json key, matched on the Virus parameter page+index), its kind and
-its box in the page image's own pixels. tools/make_layout.py scales that onto the MPC screen."""
+"""Read the control positions of one of gearmulator's Osirus skins (default: Galaxpel, skin/galaxpel/VirusC_Galaxpel.rml, GPL-3.0) and write
+pages.json beside it: per page, each control's key (our params.json key, matched on the Virus parameter page+index), its kind and
+its box in the page image's own pixels. tools/make_layout.py scales that onto the MPC screen.
+    import_galaxpel.py [<skin dir> <rml file> [<parameterDescriptions json>]]    e.g. a Trancy or Hoverland skin folder"""
+import sys
 import json
 import os
 import re
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-SK = os.path.join(HERE, "..", "skin", "galaxpel")
+SK = sys.argv[1] if len(sys.argv) > 1 else os.path.join(HERE, "..", "skin", "galaxpel")
+RML = sys.argv[2] if len(sys.argv) > 2 else "VirusC_Galaxpel.rml"
+DESC = sys.argv[3] if len(sys.argv) > 3 else os.path.join(SK, "parameterDescriptions_C.json")
 
-desc = open(os.path.join(SK, "parameterDescriptions_C.json")).read()
+desc = open(DESC).read()
 by_name = {}
 for m in re.finditer(r'\{[^{}]*"page":\s*(\d+)[^{}]*?"index":\s*(\d+)[^{}]*?"name":\s*"([^"]*)"', desc):
     by_name.setdefault(m.group(3).strip(), (int(m.group(1)), int(m.group(2))))
@@ -22,7 +26,7 @@ ours = {}
 for m in re.finditer(r'\{"(\w+)",\s*"[^"]*",\s*VIRUS_PAGE_([AB]),\s*(\d+),', src):
     ours[(112 if m.group(2) == "A" else 113, int(m.group(3)))] = m.group(1)
 
-rml = open(os.path.join(SK, "VirusC_Galaxpel.rml")).read()
+rml = open(os.path.join(SK, RML)).read()
 pages = {}
 for pid in ("page_osc", "page_lfo", "page_fx", "page_arp"):
     a = rml.index('<img id="%s"' % pid)
