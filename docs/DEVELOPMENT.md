@@ -27,8 +27,8 @@ Repo `~/mpc-vst-osirus` (local git, nothing pushed). GPL-3.0, Gen2/aarch64 only.
 Galaxpel art (gearmulator `skins/Galaxpel`, by Emre Babus, GPL-3.0; Bebas Neue OFL) cropped per section at ONE scale (`S = 0.80`
 in `tools/make_layout.py`, knob sockets 83 px everywhere), evenly packed by `pack()`, slate background, no knob values (`vs=0`),
 Q-Links in blocks of four with `qlink_bounds=column` (yellow outlines; the `QL` table in make_layout.py).
-Tabs: PLAY (title bar, preset/bank steppers, whole Patch Settings panel, ENGINE readouts + Panic, OUTPUT knobs), BANKS (bank list 1 col,
-patches 3 cols x 10, page stepper), OSC, VOICE, FILTER, LFO 1+2, LFO 3 / ARP, MOD (slots 4-6 only with `rom_bc:Yes`), FX 1, FX 2, VELOCITY.
+Tabs: PLAY (title bar, preset/bank steppers, whole Patch Settings panel, ENGINE readouts + Panic + Init, OUTPUT knobs), BANKS (bank list 1 col,
+patches 3 cols x 10, page stepper), OSC (incl. OSC 3, unison, sub, portamento; drawn at 0.67), FILTER, LFO 1+2, LFO 3 / ARP, MOD (slots 4-6 only with `rom_bc:Yes`), FX 1, FX 2, VELOCITY.
 Commands: `tools/gen_params.py` -> `vst/params.json` (252 params; **append only**, params.lock), `tools/make_layout.py` -> `vst/layout.conf`,
 `tools/preview.sh <name>` -> `vst/preview/<name>/page_N.png` (offline, no device), `tools/import_galaxpel.py` -> `skin/galaxpel/pages.json`.
 Known skin gaps: Patch Settings "Secondary output" / "Out balance" are baked art with no parameter; FILTER page "Keyfollow base" shows as

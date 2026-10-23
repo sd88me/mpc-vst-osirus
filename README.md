@@ -20,7 +20,7 @@ SysEx `.mid` dumps in `osirus/banks/` show up as banks after the ROM's own.
 ## Using it
 Add *Osirus* to a plugin track. Pages (tabs at the bottom): **PLAY** (title bar with the preset and bank steppers, Patch Settings,
 engine status and an INIT PATCH button, output controls), **BANKS** (bank list and the patches of the current bank, 30 per page),
-**OSC**, **VOICE**, **FILTER**, **LFO 1+2**, **LFO 3 / ARP**, **MOD** (slots 4-6 appear on a Virus B or C only), **FX 1**, **FX 2**, **VELOCITY**.
+**OSC** (oscillators 1-3, mixer, ring mod, sub, unison, portamento on one page), **FILTER**, **LFO 1+2**, **LFO 3 / ARP**, **MOD** (slots 4-6 appear on a Virus B or C only), **FX 1**, **FX 2**, **VELOCITY**.
 Every four Q-Links form a column that MPC outlines on the page. The data wheel steps the preset.
 MPC's PRESET menu has `INIT` (the ROM's own "- Init -" single) and `Default`.
 

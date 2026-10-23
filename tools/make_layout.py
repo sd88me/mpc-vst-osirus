@@ -95,13 +95,11 @@ _tab = {}
 QL = {
     "PLAY": ["preset", "bank_index", "-", "-", "flt_attack", "flt_decay", "flt_sustain", "flt_release", "amp_attack", "amp_decay", "amp_sustain", "amp_release",
              "osc_balance", "osc_mainvolume", "flt_sustain_time", "amp_sustain_time"],
-    "VOICE": ["osc3_semitone", "osc3_detune", "osc3_volume", "sub_osc_volume", "unison_detune", "unison_pan_spread", "unison_lfo_phase", "osc_init_phase",
-              "portamento_time", "punch_intensity", "-", "-"],
     "FILTER": ["cutoff", "filter1_resonance", "filter1_env_amt", "filter1_keyfollow", "resonance1_velocity", "flt1_envamt_velocity", "-", "-",
                "cutoff2_offset", "filter2_resonance", "filter2_env_amt", "filter2_keyfollow", "resonance2_velocity", "flt2_envamt_velocity", "-", "-"],
     "LFO 3 / ARP": ["lfo3_rate", "lfo3_keyfollow", "lfo3_fadein_time", "-", "osc_lfo3_amount", "-", "-", "-", "clock_tempo", "arp_note_length", "arp_swing", "-"],
-    "FX 1": ["distortion_intensity", "bass_intensity", "bass_tune", "-", "phaser_rate", "phaser_frequency", "phaser_depth", "phaser_feedback",
-             "phaser_spread", "phaser_mix", "-", "-", "chorus_rate", "chorus_depth", "chorus_feedback", "chorus_delay"],
+    "FX 1": ["distortion_intensity", "-", "-", "-", "bass_intensity", "bass_tune", "-", "-", "phaser_rate", "phaser_frequency", "phaser_depth", "phaser_feedback",
+             "chorus_rate", "chorus_depth", "chorus_feedback", "chorus_delay"],
     "FX 2": ["low_eq_gain", "low_eq_freq", "mid_eq_gain", "mid_eq_freq", "mid_eq_q", "high_eq_gain", "high_eq_freq", "-",
              "delay_time", "delay_feedback", "delay_color", "delay_rate_rev_decay", "delay_depth", "effect_send", "-", "-"],
     "VELOCITY": ["osc1_shape_velocity", "flt1_envamt_velocity", "resonance1_velocity", "pulsewidth_velocity", "amp_velocity", "panorama_velocity", "-", "-",
@@ -160,7 +158,7 @@ MANUAL = {"fx": {"delay_time": (1331, 108), "delay_feedback": (1456, 108), "dela
 _n = [0]
 
 
-def piece(src, rect, s, x, y, tabname, skip=(), when=""):
+def piece(src, rect, s, x, y, tabname="", skip=(), when=""):
     """Draw rect (page px) of a source image scaled by s with its top-left at skin (x, y), then the live controls inside it."""
     x0, y0, x1, y1 = rect
     _n[0] += 1
@@ -204,12 +202,35 @@ def pack(rows, y0=0, y1=628, x0=8, x1=1272):
     y = y0 + (y1 - y0 - sum(hs) - vg * (len(rows) - 1)) // 2
     for row, h in zip(rows, hs):
         ws = [int((r[2] - r[0]) * S) for _, r in row]
-        hg = max(8, (x1 - x0 - sum(ws)) // (len(row) + 1))
+        hg = min(28, max(8, (x1 - x0 - sum(ws)) // (len(row) + 1)))   # side by side panels stay close, not spread to the edges
         x = x0 + (x1 - x0 - sum(ws) - hg * (len(row) - 1)) // 2
         for (src, r), w in zip(row, ws):
             piece(src, r, S, x, y + (h - int((r[3] - r[1]) * S)) // 2, "")
             x += w + hg
         y += h + vg
+
+
+def colpack(columns, s, y0=14, y1=614, x0=10, x1=1270, rowgap=8):
+    """columns: lists of items stacked top to bottom (an item is a piece, or a list of pieces side by side); each column is justified
+    between y0 and y1 and the columns are spread evenly over x0..x1."""
+    def dims(it):
+        its = it if isinstance(it, list) else [it]
+        return sum(int((p[1][2] - p[1][0]) * s) for p in its) + rowgap * (len(its) - 1), max(int((p[1][3] - p[1][1]) * s) for p in its)
+    ws = [max(dims(it)[0] for it in col) for col in columns]
+    gap = (x1 - x0 - sum(ws)) // (len(columns) + 1)
+    x = x0 + gap
+    for col, w in zip(columns, ws):
+        hs = [dims(it)[1] for it in col]
+        vg = (y1 - y0 - sum(hs)) // (len(col) - 1) if len(col) > 1 else 0
+        y = y0 if len(col) > 1 else y0 + (y1 - y0 - hs[0]) // 2
+        for it, h in zip(col, hs):
+            its = it if isinstance(it, list) else [it]
+            xx = x + (w - dims(it)[0]) // 2
+            for pc in its:
+                piece(pc[0], pc[1], s, xx, y + (h - int((pc[1][3] - pc[1][1]) * s)) // 2, "", when=(pc[2] if len(pc) > 2 else ""))
+                xx += int((pc[1][2] - pc[1][0]) * s) + rowgap
+            y += h + vg
+        x += w + gap
 
 
 HDR = 118   # the PLAY header's height
@@ -219,12 +240,13 @@ def header():
     x, y = 16, 6
     piece("main", (40, 50, 1600, 195), S, x, y, "")
     # the preset stepper comes first: the data wheel acts on the first focusable control
-    emit('stepper w=370 h=38 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (x + int((1240 - 40) * S), y + 62 + Y86))
-    emit('stepper w=170 h=38 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (x + int((870 - 40) * S), y + 62 + Y86))
+    # together they cover the baked display bar (skin x 566-1240): the ">" and the glow of the original no longer show
+    emit('stepper w=440 h=44 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (1020, y + 62 + Y86))
+    emit('stepper w=232 h=44 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (686, y + 62 + Y86))
 
 
 OSC1, OSC2, MIXER, RING = ("osc", (0, 0, 755, 232)), ("osc", (0, 234, 755, 662)), ("osc", (760, 0, 1085, 232)), ("osc", (760, 236, 1085, 662))
-OSC3, SUB, UNISON, PORTA = ("osc", (0, 668, 762, 895)), ("osc", (762, 668, 1085, 895)), ("osc", (0, 900, 762, 1125)), ("osc", (762, 900, 1085, 1125))
+OSC3, SUB, UNISON, PORTA = ("osc", (0, 668, 746, 895)), ("osc", (762, 668, 1085, 895)), ("osc", (0, 900, 762, 1125)), ("osc", (762, 900, 1085, 1125))
 FILT, FENV, AENV = ("osc", (1092, 0, 1970, 660)), ("osc", (1092, 668, 1970, 895)), ("osc", (1092, 900, 1970, 1125))
 DIST, ANALOG, PHASER, CHORUS = ("fx", (0, 0, 540, 218)), ("fx", (548, 0, 1014, 218)), ("fx", (0, 226, 1014, 444)), ("fx", (0, 452, 1014, 668))
 EQ, PUNCH, DELAY = ("fx", (0, 678, 1014, 895)), ("fx", (650, 904, 1014, 1125)), ("fx", (1022, 0, 1970, 444))
@@ -259,10 +281,18 @@ emit('list x=286 y=%d w=966 h=490 cols=3 rows=10 gap=6 th=41 key=patch_slot orde
 # ---------------------------------------------------------------- OSC / VOICE / FILTER
 tab("OSC", ["osc1_shape", "osc1_pulsewidth", "osc1_semitone", "osc1_keyfollow", "osc2_shape", "osc2_pulsewidth", "osc2_semitone", "osc2_keyfollow",
             "osc2_detune", "osc2_fm_amount", "osc2_filt_env_amt", "fm_filt_env_amt", "osc_balance", "osc_mainvolume", "noise_volume", "ringmod_volume"])
-pack([[OSC1, MIXER], [OSC2, RING]])
-tab("VOICE", ["osc3_semitone", "osc3_detune", "osc3_volume", "sub_osc_volume", "unison_detune", "unison_pan_spread", "unison_lfo_phase", "osc_init_phase", "portamento_time",
-              "punch_intensity"])
-pack([[OSC3, SUB], [UNISON, PORTA, PUNCH]])
+# oscillators 1-3, mixer, ring mod, sub, unison and portamento on one page: this page alone is drawn at 0.67 (knob sockets 70 px)
+_s = 0.67
+_x = (10, 528, 758)       # three columns of 506 / 218 / ~500 px, 12 px apart
+piece(*OSC1, _s, _x[0], 70, "")
+piece(*MIXER, _s, _x[1], 70, "")
+piece(*OSC3, _s, _x[2], 70, "")
+piece(*OSC2, _s, _x[0], 235, "")
+piece(*RING, _s, _x[1], 235, "")
+piece(*UNISON, _s, _x[2], 235, "")
+piece(*SUB, _s, _x[2], 391, "")
+piece(*PORTA, _s, _x[2] + int((SUB[1][2] - SUB[1][0]) * _s) + 8, 391, "")
+
 tab("FILTER", ["cutoff", "filter1_resonance", "filter1_env_amt", "filter1_keyfollow", "resonance1_velocity", "flt1_envamt_velocity", "cutoff2_offset", "filter2_resonance",
                "filter2_env_amt", "filter2_keyfollow", "resonance2_velocity", "flt2_envamt_velocity", "filter_balance"])
 pack([[FILT]])
@@ -275,8 +305,7 @@ tab("LFO 3 / ARP", ["lfo3_rate", "lfo3_keyfollow", "lfo3_fadein_time", "osc_lfo3
 pack([[LFO3], [ARP]])
 
 # ---------------------------------------------------------------- MOD (six slots on one page)
-tab("MOD", ["assign1_amount", "-", "-", "-", "assign2_amount1", "assign2_amount2", "-", "-", "assign3_amount1", "assign3_amount2", "assign3_amount3", "-",
-            "assign4_amount", "assign5_amount", "assign6_amount", "-"])
+tab("MOD", ["assign1_amount", "-", "-", "-", "assign2_amount1", "assign2_amount2", "-", "-", "assign3_amount1", "assign3_amount2", "assign3_amount3", "-"])
 # slots 3, 2, 1 in three columns; slots 4-6 stacked in a fourth, shown on a Virus B or C only (rom_bc)
 piece(*SLOT3, S, 40, 100, "MOD")
 piece(*SLOT2, S, 340, 100, "MOD")
@@ -290,7 +319,7 @@ tab("FX 1", ["distortion_intensity", "bass_intensity", "bass_tune", "phaser_rate
 pack([[DIST, ANALOG], [PHASER], [CHORUS]])
 tab("FX 2", ["low_eq_gain", "mid_eq_gain", "high_eq_gain", "low_eq_freq", "mid_eq_freq", "high_eq_freq", "mid_eq_q", "delay_time", "delay_feedback", "delay_color",
              "delay_rate_rev_decay", "delay_depth", "effect_send"])
-pack([[EQ], [DELAY]])
+pack([[EQ, PUNCH], [DELAY]])
 
 # ---------------------------------------------------------------- VELOCITY / PATCH
 tab("VELOCITY", ["osc1_shape_velocity", "flt1_envamt_velocity", "resonance1_velocity", "pulsewidth_velocity", "amp_velocity", "panorama_velocity", "osc2_shape_velocity",
