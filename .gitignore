@@ -1,0 +1,13 @@
+build/
+dist/
+vst/build/
+vst/preview/
+dist-local/
+vst/images/gp_*.png
+vst/images/galaxpel_page_*.png
+__pycache__/
+*.rom
+*.bin
+*.BIN
+*.mid
+roms/

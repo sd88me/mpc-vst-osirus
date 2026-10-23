@@ -1,0 +1,36 @@
+{
+  "name": "Osirus",
+  "vendor": "sd88me",
+  "uid": "OsrS",
+  "version": 1000,
+  "targets": [
+    "aarch64"
+  ],
+  "so": "osirus.so",
+  "params": "params.json",
+  "layout": "layout.conf",
+  "art": "html",
+  "defines": {
+    "HAS_DISPLAY_REV": 1,
+    "DISPLAY_REV_NO_UPDATE": 1,
+    "MODULE_SUBDIR": "\"osirus\"",
+    "MODULE_DIR": "\"/sdcard/vst/osirus\"",
+    "PARAM_TEXT_MAX": 64
+  },
+  "build": {
+    "root": "..",
+    "sources": [],
+    "cflags": [],
+    "libs": [
+      "vst/build/engine/libosirus_all.a",
+      "-Wl,--exclude-libs,ALL",
+      "-static-libstdc++",
+      "-static-libgcc",
+      "-lstdc++",
+      "-lm",
+      "-ldl"
+    ]
+  },
+  "tile": "images/tile.png",
+  "skin_post": "skin_post.py"
+}

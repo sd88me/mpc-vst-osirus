@@ -1,0 +1,1739 @@
+{
+ "page_osc": {
+  "image": "osc_page-sub-fixed.png",
+  "w": 1970.0,
+  "h": 1125.0,
+  "items": [
+   {
+    "kind": "knob",
+    "key": "osc1_shape",
+    "x": 223.3,
+    "y": 58.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc1_pulsewidth",
+    "x": 351.3,
+    "y": 58.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc1_semitone",
+    "x": 479.3,
+    "y": 58.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc1_keyfollow",
+    "x": 607.3,
+    "y": 58.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_shape",
+    "x": 223.4,
+    "y": 296.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_pulsewidth",
+    "x": 351.4,
+    "y": 296.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_semitone",
+    "x": 479.4,
+    "y": 296.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_keyfollow",
+    "x": 607.4,
+    "y": 296.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_fm_amount",
+    "x": 223.4,
+    "y": 480.61,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_detune",
+    "x": 351.4,
+    "y": 480.61,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "fm_filt_env_amt",
+    "x": 479.4,
+    "y": 480.61,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_filt_env_amt",
+    "x": 607.4,
+    "y": 480.61,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc3_semitone",
+    "x": 223.3,
+    "y": 726.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc3_detune",
+    "x": 351.3,
+    "y": 726.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc3_volume",
+    "x": 479.3,
+    "y": 726.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "unison_detune",
+    "x": 222.0,
+    "y": 956.2,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "unison_pan_spread",
+    "x": 350.0,
+    "y": 956.2,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "unison_lfo_phase",
+    "x": 478.0,
+    "y": 956.2,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc_init_phase",
+    "x": 606.0,
+    "y": 956.2,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "osc1_wave_select",
+    "x": 20.0,
+    "y": 92.882,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "osc2_wave_select",
+    "x": 20.0,
+    "y": 329.75,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "osc_fm_mode",
+    "x": 20.0,
+    "y": 515.0,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "osc3_mode",
+    "x": 20.0,
+    "y": 759.0,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "unison_mode",
+    "x": 20.0,
+    "y": 985.0,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "osc2_sync",
+    "x": 680.8,
+    "y": 253.2,
+    "w": 38.0,
+    "h": 38.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "osc_balance",
+    "x": 800.3,
+    "y": 56.8999,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc_mainvolume",
+    "x": 939.3,
+    "y": 56.8999,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "noise_volume",
+    "x": 800.3,
+    "y": 296.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "ringmod_volume",
+    "x": 939.3,
+    "y": 296.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "noise_color",
+    "x": 800.3,
+    "y": 480.61,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "sub_osc_volume",
+    "x": 939.5,
+    "y": 726.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "portamento_time",
+    "x": 800.3,
+    "y": 956.2,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "sub_osc_shape",
+    "x": 813.8,
+    "y": 735.2,
+    "w": 39.0,
+    "h": 102.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "cutoff",
+    "x": 1167.1,
+    "y": 57.0601,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "filter1_resonance",
+    "x": 1291.1,
+    "y": 57.0601,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "filter1_env_amt",
+    "x": 1415.1,
+    "y": 57.0601,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "filter1_keyfollow",
+    "x": 1539.1,
+    "y": 57.0601,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "resonance1_velocity",
+    "x": 1663.1,
+    "y": 57.0601,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt1_envamt_velocity",
+    "x": 1787.1,
+    "y": 57.0601,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "filter1_mode",
+    "x": 1151.4,
+    "y": 244.0,
+    "w": 160.0,
+    "h": 50.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "filter1_env_polarity",
+    "x": 1729.1,
+    "y": 365.26,
+    "w": 38.0,
+    "h": 66.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "cutoff2_offset",
+    "x": 1167.1,
+    "y": 481.408,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "cutoff2_offset",
+    "x": 1167.1,
+    "y": 481.408,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "filter2_resonance",
+    "x": 1291.1,
+    "y": 481.408,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "filter2_env_amt",
+    "x": 1415.1,
+    "y": 481.408,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "filter2_keyfollow",
+    "x": 1539.1,
+    "y": 481.408,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "resonance2_velocity",
+    "x": 1663.1,
+    "y": 481.408,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt2_envamt_velocity",
+    "x": 1787.1,
+    "y": 481.408,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "filter2_mode",
+    "x": 1151.2,
+    "y": 345.0,
+    "w": 160.0,
+    "h": 50.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "filter2_env_polarity",
+    "x": 1822.1,
+    "y": 365.708,
+    "w": 38.0,
+    "h": 66.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "filter_balance",
+    "x": 1373.7,
+    "y": 284.1,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "filter_routing",
+    "x": 1523.2,
+    "y": 244.0,
+    "w": 158.0,
+    "h": 50.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "saturation_curve",
+    "x": 1523.2,
+    "y": 345.0,
+    "w": 158.0,
+    "h": 50.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "filter_keytrack_base",
+    "x": 1727.0,
+    "y": 248.0,
+    "w": 158.0,
+    "h": 42.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "filter2_cutoff_link",
+    "x": 1099.0,
+    "y": 288.5,
+    "w": 36.0,
+    "h": 62.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "flt_attack",
+    "x": 1162.0,
+    "y": 724.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt_decay",
+    "x": 1318.0,
+    "y": 724.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt_sustain",
+    "x": 1474.0,
+    "y": 724.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt_sustain_time",
+    "x": 1630.0,
+    "y": 724.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt_release",
+    "x": 1786.0,
+    "y": 724.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "amp_attack",
+    "x": 1162.0,
+    "y": 955.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "amp_decay",
+    "x": 1318.0,
+    "y": 955.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "amp_sustain",
+    "x": 1474.0,
+    "y": 955.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "amp_sustain_time",
+    "x": 1630.0,
+    "y": 955.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "amp_release",
+    "x": 1786.0,
+    "y": 955.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   }
+  ],
+  "missing": []
+ },
+ "page_lfo": {
+  "image": "lfo_page.png",
+  "w": 1970.0,
+  "h": 1125.0,
+  "items": [
+   {
+    "kind": "combo",
+    "key": "lfo1_shape",
+    "x": 22.0,
+    "y": 64.0,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo1_clock",
+    "x": 22.0,
+    "y": 150.0,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "lfo1_mode",
+    "x": 18.0,
+    "y": 253.2,
+    "w": 39.0,
+    "h": 102.0,
+    "toggle": true
+   },
+   {
+    "kind": "button",
+    "key": "lfo1_env_mode",
+    "x": 137.334,
+    "y": 253.2,
+    "w": 52.0,
+    "h": 36.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "lfo1_rate",
+    "x": 241.2,
+    "y": 45.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo1_keyfollow",
+    "x": 370.2,
+    "y": 45.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo1_symmetry",
+    "x": 242.2,
+    "y": 211.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo1_keytrigger",
+    "x": 370.2,
+    "y": 212.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc1_lfo1_amount",
+    "x": 520.7,
+    "y": 45.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_lfo1_amount",
+    "x": 649.5,
+    "y": 45.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "filtgain_lfo1_amount",
+    "x": 520.7,
+    "y": 212.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo1_assign_amount",
+    "x": 649.5,
+    "y": 211.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "pw_lfo1_amount",
+    "x": 778.4,
+    "y": 45.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "reso_lfo1_amount",
+    "x": 907.2,
+    "y": 45.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo1_assign_dest",
+    "x": 782.0,
+    "y": 235.0,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo2_shape",
+    "x": 22.0,
+    "y": 440.0,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo2_clock",
+    "x": 22.0,
+    "y": 527.5,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "lfo2_mode",
+    "x": 18.0,
+    "y": 630.5,
+    "w": 39.0,
+    "h": 102.0,
+    "toggle": true
+   },
+   {
+    "kind": "button",
+    "key": "lfo2_env_mode",
+    "x": 137.334,
+    "y": 630.0,
+    "w": 52.0,
+    "h": 36.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "lfo2_rate",
+    "x": 241.2,
+    "y": 421.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo2_keyfollow",
+    "x": 370.9,
+    "y": 421.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo2_symmetry",
+    "x": 242.2,
+    "y": 587.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo2_keytrigger",
+    "x": 370.9,
+    "y": 588.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "cutoff1_lfo2_amount",
+    "x": 520.0,
+    "y": 421.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "cutoff2_lfo2_amount",
+    "x": 649.2,
+    "y": 421.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "pan_lfo2_amount",
+    "x": 520.0,
+    "y": 588.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo2_assign_amount",
+    "x": 649.2,
+    "y": 587.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "shape_lfo2_amount",
+    "x": 778.4,
+    "y": 421.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "fm_lfo2_amount",
+    "x": 907.6,
+    "y": 421.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo2_assign_dest",
+    "x": 782.0,
+    "y": 612.0,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo3_shape",
+    "x": 22.0,
+    "y": 818.75,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo3_clock",
+    "x": 22.0,
+    "y": 903.5,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "lfo3_mode",
+    "x": 18.0,
+    "y": 1008.23,
+    "w": 39.0,
+    "h": 102.0,
+    "toggle": true
+   },
+   {
+    "kind": "knob",
+    "key": "lfo3_rate",
+    "x": 241.3,
+    "y": 800.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo3_keyfollow",
+    "x": 370.3,
+    "y": 800.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "lfo3_fadein_time",
+    "x": 241.3,
+    "y": 966.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc_lfo3_amount",
+    "x": 650.0,
+    "y": 800.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "lfo3_destination",
+    "x": 782.0,
+    "y": 824.5,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign1_amount",
+    "x": 1573.3,
+    "y": 184.6,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign1_source",
+    "x": 1705.0,
+    "y": 115.0,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign1_destination",
+    "x": 1705.0,
+    "y": 237.3,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign2_amount1",
+    "x": 1106.4,
+    "y": 776.8,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign2_source",
+    "x": 1236.5,
+    "y": 709.2,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign2_dest1",
+    "x": 1236.5,
+    "y": 830.9,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign2_amount2",
+    "x": 1106.4,
+    "y": 929.6,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign2_dest2",
+    "x": 1236.5,
+    "y": 982.5,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign3_amount1",
+    "x": 1106.4,
+    "y": 183.6,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign3_source",
+    "x": 1236.5,
+    "y": 116.0,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign3_dest1",
+    "x": 1236.5,
+    "y": 238.3,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign3_amount2",
+    "x": 1106.4,
+    "y": 336.4,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign3_dest2",
+    "x": 1236.5,
+    "y": 388.8,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign3_amount3",
+    "x": 1106.4,
+    "y": 486.6,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign3_dest3",
+    "x": 1236.5,
+    "y": 539.5,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign4_amount",
+    "x": 1573.3,
+    "y": 435.2,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign4_source",
+    "x": 1705.0,
+    "y": 365.6,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign4_destination",
+    "x": 1705.0,
+    "y": 486.9,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign5_amount",
+    "x": 1573.3,
+    "y": 683.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign5_source",
+    "x": 1705.0,
+    "y": 615.4,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign5_destination",
+    "x": 1705.0,
+    "y": 737.7,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "assign6_amount",
+    "x": 1573.3,
+    "y": 928.9,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign6_source",
+    "x": 1705.0,
+    "y": 861.3,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "assign6_destination",
+    "x": 1705.0,
+    "y": 983.6,
+    "w": 180.0,
+    "h": 45.0,
+    "toggle": false
+   }
+  ],
+  "missing": []
+ },
+ "page_fx": {
+  "image": "fx_page.png",
+  "w": 1970.0,
+  "h": 1125.0,
+  "items": [
+   {
+    "kind": "combo",
+    "key": "distortion_curve",
+    "x": 20.0,
+    "y": 91.8999,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "distortion_intensity",
+    "x": 310.6,
+    "y": 55.3701,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "bass_intensity",
+    "x": 646.9,
+    "y": 56.1001,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "bass_tune",
+    "x": 799.2,
+    "y": 56.1001,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "phaser_mode",
+    "x": 17.0,
+    "y": 324.5,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "phaser_rate",
+    "x": 234.0,
+    "y": 272.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "phaser_frequency",
+    "x": 359.0,
+    "y": 272.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "phaser_depth",
+    "x": 484.0,
+    "y": 272.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "phaser_feedback",
+    "x": 609.0,
+    "y": 272.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "phaser_spread",
+    "x": 734.0,
+    "y": 272.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "phaser_mix",
+    "x": 859.0,
+    "y": 272.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "chorus_lfo_shape",
+    "x": 20.0,
+    "y": 562.0,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "chorus_rate",
+    "x": 233.0,
+    "y": 497.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "chorus_depth",
+    "x": 389.0,
+    "y": 497.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "chorus_feedback",
+    "x": 545.0,
+    "y": 497.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "chorus_delay",
+    "x": 701.0,
+    "y": 497.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "chorus_mix",
+    "x": 857.0,
+    "y": 497.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "low_eq_gain",
+    "x": 74.4,
+    "y": 749.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "low_eq_freq",
+    "x": 201.4,
+    "y": 749.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "mid_eq_gain",
+    "x": 324.4,
+    "y": 749.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "mid_eq_freq",
+    "x": 450.4,
+    "y": 749.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "mid_eq_q",
+    "x": 575.9,
+    "y": 749.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "high_eq_gain",
+    "x": 708.4,
+    "y": 749.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "high_eq_freq",
+    "x": 835.4,
+    "y": 749.5,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "input_follower_mode",
+    "x": 20.0,
+    "y": 1010.5,
+    "w": 158.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt_sustain",
+    "x": 246.0,
+    "y": 965.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt_attack",
+    "x": 372.8,
+    "y": 965.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt_release",
+    "x": 496.0,
+    "y": 965.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "punch_intensity",
+    "x": 776.3,
+    "y": 965.3,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "delay_rate_rev_decay",
+    "x": 256.0,
+    "y": 56.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "delay_lfo_shape",
+    "x": 381.0,
+    "y": 56.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "delay_color",
+    "x": 506.0,
+    "y": 56.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "delay_time",
+    "x": 631.0,
+    "y": 56.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "delay_feedback",
+    "x": 756.0,
+    "y": 56.0,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "delay_depth",
+    "x": 272.0,
+    "y": 287.0,
+    "w": 160.0,
+    "h": 45.0,
+    "toggle": false
+   }
+  ],
+  "missing": []
+ },
+ "page_arp": {
+  "image": "arp_page_midiPorts.png",
+  "w": 1970.0,
+  "h": 1125.0,
+  "items": [
+   {
+    "kind": "knob",
+    "key": "osc1_shape_velocity",
+    "x": 58.9973,
+    "y": 78.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt1_envamt_velocity",
+    "x": 188.997,
+    "y": 78.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "resonance1_velocity",
+    "x": 318.997,
+    "y": 78.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "pulsewidth_velocity",
+    "x": 448.997,
+    "y": 78.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "amp_velocity",
+    "x": 578.997,
+    "y": 78.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "panorama_velocity",
+    "x": 708.997,
+    "y": 78.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "osc2_shape_velocity",
+    "x": 187.997,
+    "y": 289.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "flt2_envamt_velocity",
+    "x": 317.997,
+    "y": 289.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "resonance2_velocity",
+    "x": 447.997,
+    "y": 289.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "fm_amount_velocity",
+    "x": 577.997,
+    "y": 289.542,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "input_mode",
+    "x": 28.0,
+    "y": 569.0,
+    "w": 160.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "clock_tempo",
+    "x": 916.5,
+    "y": 78.6001,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "arp_note_length",
+    "x": 1045.2,
+    "y": 78.6001,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "arp_swing",
+    "x": 1175.5,
+    "y": 78.6001,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "arp_mode",
+    "x": 1354.4,
+    "y": 73.6001,
+    "w": 104.0,
+    "h": 72.2857,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "arp_mode",
+    "x": 0.0,
+    "y": 0.0,
+    "w": 100.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "arp_pattern",
+    "x": 1513.6,
+    "y": 55.5,
+    "w": 180.0,
+    "h": 40.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "arp_octave_range",
+    "x": 1513.6,
+    "y": 122.0,
+    "w": 180.0,
+    "h": 40.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "arp_clock",
+    "x": 1720.0,
+    "y": 55.5,
+    "w": 180.0,
+    "h": 40.0,
+    "toggle": false
+   },
+   {
+    "kind": "button",
+    "key": "arp_hold",
+    "x": 1712.0,
+    "y": 124.0,
+    "w": 72.0,
+    "h": 37.0,
+    "toggle": true
+   },
+   {
+    "kind": "combo",
+    "key": "key_mode",
+    "x": 924.45,
+    "y": 571.32,
+    "w": 185.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "patch_volume",
+    "x": 1133.65,
+    "y": 534.82,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "panorama",
+    "x": 1263.25,
+    "y": 534.82,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "knob",
+    "key": "transpose",
+    "x": 1263.25,
+    "y": 682.32,
+    "w": 104.0,
+    "h": 104.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "bender_range_up",
+    "x": 1536.14,
+    "y": 535.5,
+    "w": 185.0,
+    "h": 45.0,
+    "toggle": false
+   },
+   {
+    "kind": "combo",
+    "key": "bender_range_down",
+    "x": 1768.14,
+    "y": 535.5,
+    "w": 185.0,
+    "h": 45.0,
+    "toggle": false
+   }
+  ],
+  "missing": [
+   "Input Select",
+   "Pure Tuning",
+   "Soft Knob-1 Mode",
+   "Soft Knob1 ShortName",
+   "Soft Knob-2 Mode",
+   "Soft Knob2 ShortName",
+   "Part Output Select",
+   "Second Output Balance",
+   "Bender Scale",
+   "Control Smooth Mode",
+   "Category1",
+   "Category2"
+  ]
+ }
+}

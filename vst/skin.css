@@ -1,0 +1,6 @@
+/* Osirus: the look of gearmulator's Galaxpel skin. Colours from the layout's theme_* lines. Bebas Neue: SIL OFL 1.1 (vst/fonts/). */
+@font-face { font-family: "Bebas Neue"; src: url("fonts/BebasNeue-Regular.ttf"); }
+@font-face { font-family: "Bebas Neue Bold"; src: url("fonts/BebasNeue-Bold.ttf"); }
+:root { --font: "Bebas Neue", "Titillium Web", sans-serif; --title-font: "Bebas Neue Bold", "Titillium Web", sans-serif;
+        --title-size: 22px; --label-size: 16px; --radius: 6px; --sheen: 0.06; --button-size: 18px; --seg-size: 16px; }
+.frame-title, .td3 .frame-title { fill: var(--ink); letter-spacing: 1px; }

@@ -1,0 +1,3156 @@
+/*
+ * Osirus (Access Virus A/B/C emulation) as an MPC OS plugin engine.
+ *
+ * Derived from schwung-virus (charlesvestal, GPL-3.0; src/VENDORED.md lists the changes). The Move module ran the
+ * DSP56300 JIT emulator in a forked child process; inside MPC's plugin host the same code runs on a worker thread of
+ * the host process, because forking MPC is not an option. Parent/child talk through the same state struct as before
+ * (audio ring, MIDI FIFO, parameter table), now plain heap memory, one per instance.
+ *
+ *   Host threads: create/destroy/on_midi/set_param/get_param/render_block (the plugin API below), via
+ *     adapters/schwung/schwung_engine.c -> wrapper/engine.h.
+ *   Emulator thread (child_main): owns the gearmulator objects, runs the emulated Virus, resamples 46875 -> 44100 Hz
+ *     and writes the audio ring. The DSP56300 itself runs on a thread gearmulator starts.
+ *
+ * GPL-3.0 License
+ */
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <cstdint>
+#include <dirent.h>
+#include <pthread.h>
+#include <unistd.h>
+#include <time.h>
+#include <sched.h>
+#include <errno.h>
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <stdarg.h>
+#include <algorithm>
+#include <vector>
+#include <string>
+#include <atomic>
+
+/* Gearmulator headers */
+#include "virusLib/device.h"
+#include "virusLib/dspSingle.h"
+#include "virusLib/microcontroller.h"
+#include "virusLib/romfile.h"
+#include "virusLib/romloader.h"
+#include "virusLib/deviceModel.h"
+#include "synthLib/midiToSysex.h"
+#include "dsp56kEmu/audio.h"
+#include "dsp56kEmu/semaphore.h"
+#include "synthLib/audioTypes.h"
+#include "synthLib/midiTypes.h"
+#include "program_selection.h"
+
+/* Plugin API v2 (inline definitions to avoid path issues) */
+extern "C" {
+
+#define MOVE_PLUGIN_API_VERSION_2 2
+#define MOVE_SAMPLE_RATE 44100
+#define MOVE_FRAMES_PER_BLOCK 128
+
+typedef struct host_api_v1 {
+    uint32_t api_version;
+    int sample_rate;
+    int frames_per_block;
+    uint8_t *mapped_memory;
+    int audio_out_offset;
+    int audio_in_offset;
+    void (*log)(const char *msg);
+    int (*midi_send_internal)(const uint8_t *msg, int len);
+    int (*midi_send_external)(const uint8_t *msg, int len);
+} host_api_v1_t;
+
+typedef struct plugin_api_v2 {
+    uint32_t api_version;
+    void* (*create_instance)(const char *module_dir, const char *json_defaults);
+    void (*destroy_instance)(void *instance);
+    void (*on_midi)(void *instance, const uint8_t *msg, int len, int source);
+    void (*set_param)(void *instance, const char *key, const char *val);
+    int (*get_param)(void *instance, const char *key, char *buf, int buf_len);
+    int (*get_error)(void *instance, char *buf, int buf_len);
+    void (*render_block)(void *instance, int16_t *out_interleaved_lr, int frames);
+} plugin_api_v2_t;
+
+} /* extern "C" */
+
+/* =====================================================================
+ * Constants
+ * ===================================================================== */
+
+#define DEVICE_RATE         46875.0f
+#define AUDIO_RING_SIZE     8192
+#define EMU_CHUNK           64
+#define OUTPUT_GAIN         0.7f
+#define MIDI_FIFO_SIZE      4096  /* bytes */
+#define RING_TARGET_FILL    768   /* ~17ms at 44100 Hz — extra headroom for note-on bursts */
+#define VIRUS_STATE_VERSION 3
+
+static const host_api_v1_t *g_host = nullptr;
+
+/* Microsecond clock */
+static int64_t now_us() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+}
+
+/* Logging helper */
+static void plugin_log(const char *fmt, ...) {
+    if (!g_host || !g_host->log) return;
+    char buf[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+    char msg[560];
+    snprintf(msg, sizeof(msg), "[virus] %s", buf);
+    g_host->log(msg);
+}
+
+/* Crash-safe log: writes to a dedicated file with immediate flush. */
+static FILE *g_vlog = nullptr;
+static void vlog(const char *fmt, ...) {
+    if (!g_vlog) {
+        const char *path = getenv("OSIRUS_LOG");
+        if (!path || !*path) return;
+        g_vlog = fopen(path, "a");
+    }
+    if (!g_vlog) return;
+    va_list args;
+    va_start(args, fmt);
+    vfprintf(g_vlog, fmt, args);
+    va_end(args);
+    fputc('\n', g_vlog);
+    fflush(g_vlog);
+}
+
+/* =====================================================================
+ * Virus CC parameter mapping
+ * ===================================================================== */
+
+/* Page identifiers matching gearmulator's internal pages */
+#define VIRUS_PAGE_A 0  /* Standard CC (0xB0) */
+#define VIRUS_PAGE_B 1  /* Polypressure (0xA0) */
+
+/* Minimum model required: 0 = all models, 1 = B or C, 2 = C only */
+#define VIRUS_MODEL_ALL 0
+#define VIRUS_MODEL_BC  1
+#define VIRUS_MODEL_C   2
+
+/* =====================================================================
+ * Enum option labels (from parameterDescriptions_C.json)
+ * ===================================================================== */
+
+static const char *opts_filter1_mode[] = {
+    "LowPass", "HighPass", "BandPass", "BandStop",
+    "Analog 1P", "Analog 2P", "Analog 3P", "Analog 4P"
+};
+static const char *opts_filter2_mode[] = {
+    "LowPass", "HighPass", "BandPass", "BandStop"
+};
+static const char *opts_filter_routing[] = {
+    "Serial 4", "Serial 6", "Parallel 4", "Split"
+};
+static const char *opts_filter_select[] = {
+    "Filter 1", "Filter 2", "Filter 1+2"
+};
+static const char *opts_sat_curve[] = {
+    "Off", "Light", "Soft", "Middle", "Hard", "Digital",
+    "Shaper", "Rectifier", "BitReducer", "RateReducer",
+    "Rate+Flw", "LowPass", "Low+Flw", "HighPass", "High+Flw"
+};
+static const char *opts_dist_curve[] = {
+    "Off", "Light", "Soft", "Middle", "Hard", "Digital",
+    "Shaper", "Rectifier", "BitReducer", "RateReducer",
+    "LowPass", "HighPass"
+};
+static const char *opts_key_mode[] = {
+    "Poly", "Mono 1", "Mono 2", "Mono 3", "Mono 4", "Hold"
+};
+static const char *opts_unison_mode[] = {
+    "Off", "Twin", "3", "4", "5", "6", "7", "8",
+    "9", "10", "11", "12", "13", "14", "15", "16"
+};
+static const char *opts_input_mode[] = {
+    "Off", "Dynamic", "Static", "To Effects"
+};
+static const char *opts_delay_reverb_mode[] = {
+    "Off", "Delay", "Reverb", "Rev+Fb1", "Rev+Fb2",
+    "Dly 2:1", "Dly 4:3", "Dly 4:1", "Dly 8:7",
+    "Pat 1+1", "Pat 2+1", "Pat 3+1", "Pat 4+1", "Pat 5+1",
+    "Pat 2+3", "Pat 2+5", "Pat 3+2", "Pat 3+3", "Pat 3+4",
+    "Pat 3+5", "Pat 4+3", "Pat 4+5", "Pat 5+2", "Pat 5+3",
+    "Pat 5+4", "Pat 5+5", "Pat X+Y"
+};
+static const char *opts_delay_lfo_shape[] = {
+    "Sine", "Triangle", "Saw", "Square", "S&H", "S&G"
+};
+static const char *opts_arp_mode[] = {
+    "Off", "Up", "Down", "Up&Down", "As Played", "Random", "Chord"
+};
+static const char *opts_arp_octaves[] = { "1", "2", "3", "4" };
+static const char *opts_off_on[] = { "Off", "On" };
+static const char *opts_lfo_mode[] = { "Poly", "Mono" };
+static const char *opts_lfo3_dest[] = {
+    "Osc1", "Osc1+2", "Osc2", "PW1", "PW1+2", "PW2"
+};
+static const char *opts_sub_osc_shape[] = { "Square", "Triangle" };
+static const char *opts_osc_fm_mode[] = {
+    "Pos-Tri", "Tri", "Wave", "Noise",
+    "In L", "In L+R", "In R",
+    "Aux1 L", "Aux1 L+R", "Aux1 R",
+    "Aux2 L", "Aux2 L+R", "Aux2 R"
+};
+static const char *opts_env_polarity[] = { "Negative", "Positive" };
+static const char *opts_mod_source[] = {
+    "Off", "PitchBnd", "ChanPres", "ModWheel", "Breath",
+    "Contr 3", "Foot", "Data", "Balance", "Contr 9",
+    "Express", "Contr 12", "Contr 13", "Contr 14", "Contr 15",
+    "Contr 16", "HoldPed", "PortaSw", "SostPed",
+    "AmpEnv", "FiltEnv", "Lfo 1", "Lfo 2", "Lfo 3",
+    "VeloOn", "VeloOff", "KeyFlw", "Random"
+};
+static const char *opts_phaser_mode[] = {
+    "Off", "1 Stage", "2 Stages", "3 Stages",
+    "4 Stages", "5 Stages", "6 Stages"
+};
+static const char *opts_input_follower[] = {
+    "Off", "In L", "In L+R", "In R",
+    "Aux1 L", "Aux1 L+R", "Aux1 R",
+    "Aux2 L", "Aux2 L+R", "Aux2 R"
+};
+static const char *opts_vocoder_mode[] = {
+    "Off", "Oscillator", "Osc Hold", "Noise",
+    "In L", "In L+R", "In R",
+    "Aux1 L", "Aux1 L+R", "Aux1 R",
+    "Aux2 L", "Aux2 L+R", "Aux2 R"
+};
+static const char *opts_music_div[] = {
+    "Off", "1/64", "1/32", "1/16", "1/8", "1/4", "1/2",
+    "3/64", "3/32", "3/16", "3/8",
+    "1/24", "1/12", "1/6", "1/3", "2/3", "3/4",
+    "1/1", "2/1", "4/1", "8/1", "16/1"
+};
+static const char *opts_osc_wave[] = {
+    "Sine", "Triangle", "Wave 3", "Wave 4", "Wave 5", "Wave 6",
+    "Wave 7", "Wave 8", "Wave 9", "Wave 10", "Wave 11", "Wave 12",
+    "Wave 13", "Wave 14", "Wave 15", "Wave 16", "Wave 17", "Wave 18",
+    "Wave 19", "Wave 20", "Wave 21", "Wave 22", "Wave 23", "Wave 24",
+    "Wave 25", "Wave 26", "Wave 27", "Wave 28", "Wave 29", "Wave 30",
+    "Wave 31", "Wave 32", "Wave 33", "Wave 34", "Wave 35", "Wave 36",
+    "Wave 37", "Wave 38", "Wave 39", "Wave 40", "Wave 41", "Wave 42",
+    "Wave 43", "Wave 44", "Wave 45", "Wave 46", "Wave 47", "Wave 48",
+    "Wave 49", "Wave 50", "Wave 51", "Wave 52", "Wave 53", "Wave 54",
+    "Wave 55", "Wave 56", "Wave 57", "Wave 58", "Wave 59", "Wave 60",
+    "Wave 61", "Wave 62", "Wave 63", "Wave 64"
+};
+static const char *opts_lfo_shape[] = {
+    "Sine", "Triangle", "Saw", "Square", "S&H", "S&G",
+    "Wave 3", "Wave 4", "Wave 5", "Wave 6", "Wave 7", "Wave 8",
+    "Wave 9", "Wave 10", "Wave 11", "Wave 12", "Wave 13", "Wave 14",
+    "Wave 15", "Wave 16", "Wave 17", "Wave 18", "Wave 19", "Wave 20",
+    "Wave 21", "Wave 22", "Wave 23", "Wave 24", "Wave 25", "Wave 26",
+    "Wave 27", "Wave 28", "Wave 29", "Wave 30", "Wave 31", "Wave 32",
+    "Wave 33", "Wave 34", "Wave 35", "Wave 36", "Wave 37", "Wave 38",
+    "Wave 39", "Wave 40", "Wave 41", "Wave 42", "Wave 43", "Wave 44",
+    "Wave 45", "Wave 46", "Wave 47", "Wave 48", "Wave 49", "Wave 50",
+    "Wave 51", "Wave 52", "Wave 53", "Wave 54", "Wave 55", "Wave 56",
+    "Wave 57", "Wave 58", "Wave 59", "Wave 60", "Wave 61", "Wave 62",
+    "Wave 63", "Wave 64"
+};
+static const char *opts_osc3_mode[] = {
+    "Off", "Slave", "Saw", "Pulse", "Sine", "Triangle",
+    "Wave 3", "Wave 4", "Wave 5", "Wave 6", "Wave 7", "Wave 8",
+    "Wave 9", "Wave 10", "Wave 11", "Wave 12", "Wave 13", "Wave 14",
+    "Wave 15", "Wave 16", "Wave 17", "Wave 18", "Wave 19", "Wave 20",
+    "Wave 21", "Wave 22", "Wave 23", "Wave 24", "Wave 25", "Wave 26",
+    "Wave 27", "Wave 28", "Wave 29", "Wave 30", "Wave 31", "Wave 32",
+    "Wave 33", "Wave 34", "Wave 35", "Wave 36", "Wave 37", "Wave 38",
+    "Wave 39", "Wave 40", "Wave 41", "Wave 42", "Wave 43", "Wave 44",
+    "Wave 45", "Wave 46", "Wave 47", "Wave 48", "Wave 49", "Wave 50",
+    "Wave 51", "Wave 52", "Wave 53", "Wave 54", "Wave 55", "Wave 56",
+    "Wave 57", "Wave 58", "Wave 59", "Wave 60", "Wave 61", "Wave 62",
+    "Wave 63", "Wave 64"
+};
+static const char *opts_mod_dest[] = {
+    "Off", "PatchVol", "ChannelVol", "Panorama", "Transpose", "Portamento",
+    "Osc1Shape", "Osc1PlsWdh", "Osc1WavSel", "Osc1Pitch", "Osc1Keyflw",
+    "Osc2Shape", "Osc2PlsWdh", "Osc2WavSel", "Osc2Pitch", "Osc2Detune",
+    "Osc2FmAmt", "Osc2EnvAmt", "FmEnvAmt", "Osc2Keyflw",
+    "OscBalance", "SubOscVol", "OscMainVol", "NoiseVol",
+    "Cutoff", "Cutoff2", "Filt1Reso", "Filt2Reso",
+    "Flt1EnvAmt", "Flt2EnvAmt", "Flt1Keyflw", "Flt2Keyflw", "FltBalance",
+    "FltAttack", "FltDecay", "FltSustain", "FltSusTime", "FltRelease",
+    "AmpAttack", "AmpDecay", "AmpSustain", "AmpSusTime", "AmpRelease",
+    "Lfo1Rate", "Lfo1Cont", "Lfo1>Osc1", "Lfo1>Osc2", "Lfo1>PlsWd",
+    "Lfo1>Reso", "Lfo1>FltGn",
+    "Lfo2Rate", "Lfo2Cont", "Lfo2>Shape", "Lfo2>Fm", "Lfo2>Cut1",
+    "Lfo2>Cut2", "Lfo2>Pan",
+    "Lfo3Rate", "Lfo3OscAmt",
+    "UniDetune", "UniSpread", "UniLfoPhs",
+    "ChorusMix", "ChorusRate", "ChorusDpth", "ChorusDly", "ChorusFeed",
+    "EffectSend", "DelayTime", "DelayFeed", "DelayRate", "DelayDepth",
+    "Osc1ShpVel", "Osc2ShpVel", "PlsWhdVel", "FmAmtVel",
+    "Flt1EnvVel", "Flt2EnvVel", "Reso1Vel", "Reso2Vel", "AmpVel", "PanVel",
+    "Ass1Amt1", "Ass2Amt1", "Ass2Amt2", "Ass3Amt1", "Ass3Amt2", "Ass3Amt3",
+    "OscInitPhs", "PunchInt", "RingMod", "NoiseColor", "DelayColor",
+    "ABoostInt", "ABoostTune", "DistInt",
+    "RingmodMix", "Osc3Volume", "Osc3Semi", "Osc3Detune",
+    "Lfo1AssAmt", "Lfo2AssAmt",
+    "PhaserMix", "PhaserRate", "PhaserDept", "PhaserFreq", "PhaserFdbk", "PhaserSprd",
+    "RevbDecay", "RevDamping", "RevbColor", "RevPredely", "RevFeedbck",
+    "SecBalance", "ArpNoteLen", "ArpSwing", "ArpPattern",
+    "EqMidGain", "EqMidFreq", "EqMidQFact",
+    "Assign4Amt", "Assign5Amt", "Assign6Amt"
+};
+
+#define OPTS(arr) arr, (int)(sizeof(arr)/sizeof(arr[0]))
+#define NO_OPTS NULL, 0
+
+struct virus_param_t {
+    const char *key;
+    const char *name;
+    int page;       /* VIRUS_PAGE_A or VIRUS_PAGE_B */
+    int cc;         /* parameter index within page */
+    int min_val;
+    int max_val;
+    int model_min;  /* VIRUS_MODEL_ALL, VIRUS_MODEL_BC, or VIRUS_MODEL_C */
+    const char **options;   /* NULL if not an enum */
+    int num_options;        /* 0 if not an enum */
+};
+
+static const virus_param_t g_params[] = {
+    /* Page A: Oscillators */
+    {"osc1_shape",           "Osc1 Shape",       VIRUS_PAGE_A, 17, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc1_pulsewidth",      "Osc1 PW",          VIRUS_PAGE_A, 18, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc1_wave_select",     "Osc1 Wave",        VIRUS_PAGE_A, 19, 0,  63, VIRUS_MODEL_ALL, OPTS(opts_osc_wave)},
+    {"osc1_semitone",        "Osc1 Semi",        VIRUS_PAGE_A, 20, 16,112, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc1_keyfollow",       "Osc1 KeyFlw",      VIRUS_PAGE_A, 21, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_shape",           "Osc2 Shape",       VIRUS_PAGE_A, 22, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_pulsewidth",      "Osc2 PW",          VIRUS_PAGE_A, 23, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_wave_select",     "Osc2 Wave",        VIRUS_PAGE_A, 24, 0,  63, VIRUS_MODEL_ALL, OPTS(opts_osc_wave)},
+    {"osc2_semitone",        "Osc2 Semi",        VIRUS_PAGE_A, 25, 16,112, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_detune",          "Osc2 Detune",      VIRUS_PAGE_A, 26, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_fm_amount",       "Osc2 FM Amt",      VIRUS_PAGE_A, 27, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_sync",            "Osc2 Sync",        VIRUS_PAGE_A, 28, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_off_on)},
+    {"osc2_filt_env_amt",    "Osc2 FiltEnv",     VIRUS_PAGE_A, 29, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"fm_filt_env_amt",      "FM FiltEnv",       VIRUS_PAGE_A, 30, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_keyfollow",       "Osc2 KeyFlw",      VIRUS_PAGE_A, 31, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc_balance",          "Osc Balance",      VIRUS_PAGE_A, 33, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"sub_osc_volume",       "Sub Volume",       VIRUS_PAGE_A, 34, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"sub_osc_shape",        "Sub Shape",        VIRUS_PAGE_A, 35, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_sub_osc_shape)},
+    {"osc_mainvolume",       "Osc Volume",       VIRUS_PAGE_A, 36, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"noise_volume",         "Noise Vol",        VIRUS_PAGE_A, 37, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"ringmod_volume",       "Ring Mod Vol",     VIRUS_PAGE_A, 38, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"noise_color",          "Noise Color",      VIRUS_PAGE_A, 39, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page A: Filters */
+    {"cutoff",               "Cutoff",           VIRUS_PAGE_A, 40, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"cutoff2_offset",       "Cutoff2 Ofs",      VIRUS_PAGE_A, 41, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter1_resonance",    "Filt1 Reso",       VIRUS_PAGE_A, 42, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter2_resonance",    "Filt2 Reso",       VIRUS_PAGE_A, 43, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter1_env_amt",      "Filt1 EnvAmt",     VIRUS_PAGE_A, 44, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter2_env_amt",      "Filt2 EnvAmt",     VIRUS_PAGE_A, 45, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter1_keyfollow",    "Filt1 KeyFlw",     VIRUS_PAGE_A, 46, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter2_keyfollow",    "Filt2 KeyFlw",     VIRUS_PAGE_A, 47, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter_balance",       "Filt Balance",     VIRUS_PAGE_A, 48, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"saturation_curve",     "Saturation",       VIRUS_PAGE_A, 49, 0,  14, VIRUS_MODEL_ALL, OPTS(opts_sat_curve)},
+    {"filter1_mode",         "Filt1 Mode",       VIRUS_PAGE_A, 51, 0,   7, VIRUS_MODEL_ALL, OPTS(opts_filter1_mode)},
+    {"filter2_mode",         "Filt2 Mode",       VIRUS_PAGE_A, 52, 0,   3, VIRUS_MODEL_ALL, OPTS(opts_filter2_mode)},
+    {"filter_routing",       "Filt Routing",     VIRUS_PAGE_A, 53, 0,   3, VIRUS_MODEL_ALL, OPTS(opts_filter_routing)},
+
+    /* Page A: Filter Envelope */
+    {"flt_attack",           "Flt Attack",       VIRUS_PAGE_A, 54, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"flt_decay",            "Flt Decay",        VIRUS_PAGE_A, 55, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"flt_sustain",          "Flt Sustain",      VIRUS_PAGE_A, 56, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"flt_sustain_time",     "Flt Sus Time",     VIRUS_PAGE_A, 57, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"flt_release",          "Flt Release",      VIRUS_PAGE_A, 58, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page A: Amp Envelope */
+    {"amp_attack",           "Amp Attack",       VIRUS_PAGE_A, 59, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"amp_decay",            "Amp Decay",        VIRUS_PAGE_A, 60, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"amp_sustain",          "Amp Sustain",      VIRUS_PAGE_A, 61, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"amp_sustain_time",     "Amp Sus Time",     VIRUS_PAGE_A, 62, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"amp_release",          "Amp Release",      VIRUS_PAGE_A, 63, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page A: LFO 1 */
+    {"lfo1_rate",            "LFO1 Rate",        VIRUS_PAGE_A, 67, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo1_shape",           "LFO1 Shape",       VIRUS_PAGE_A, 68, 0,  67, VIRUS_MODEL_ALL, OPTS(opts_lfo_shape)},
+    {"lfo1_env_mode",        "LFO1 Env Mode",    VIRUS_PAGE_A, 69, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_off_on)},
+    {"lfo1_mode",            "LFO1 Mode",        VIRUS_PAGE_A, 70, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_lfo_mode)},
+    {"lfo1_symmetry",        "LFO1 Symmetry",    VIRUS_PAGE_A, 71, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo1_keyfollow",       "LFO1 KeyFlw",      VIRUS_PAGE_A, 72, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo1_keytrigger",      "LFO1 KeyTrig",     VIRUS_PAGE_A, 73, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc1_lfo1_amount",     "Osc1 LFO1",        VIRUS_PAGE_A, 74, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_lfo1_amount",     "Osc2 LFO1",        VIRUS_PAGE_A, 75, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"pw_lfo1_amount",       "PW LFO1",          VIRUS_PAGE_A, 76, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"reso_lfo1_amount",     "Reso LFO1",        VIRUS_PAGE_A, 77, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filtgain_lfo1_amount", "FiltGain LFO1",    VIRUS_PAGE_A, 78, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page A: LFO 2 */
+    {"lfo2_rate",            "LFO2 Rate",        VIRUS_PAGE_A, 79, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo2_shape",           "LFO2 Shape",       VIRUS_PAGE_A, 80, 0,  67, VIRUS_MODEL_ALL, OPTS(opts_lfo_shape)},
+    {"lfo2_env_mode",        "LFO2 Env Mode",    VIRUS_PAGE_A, 81, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_off_on)},
+    {"lfo2_mode",            "LFO2 Mode",        VIRUS_PAGE_A, 82, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_lfo_mode)},
+    {"lfo2_symmetry",        "LFO2 Symmetry",    VIRUS_PAGE_A, 83, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo2_keyfollow",       "LFO2 KeyFlw",      VIRUS_PAGE_A, 84, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo2_keytrigger",      "LFO2 KeyTrig",     VIRUS_PAGE_A, 85, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"shape_lfo2_amount",    "Shape LFO2",       VIRUS_PAGE_A, 86, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"fm_lfo2_amount",       "FM LFO2",          VIRUS_PAGE_A, 87, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"cutoff1_lfo2_amount",  "Cut1 LFO2",        VIRUS_PAGE_A, 88, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"cutoff2_lfo2_amount",  "Cut2 LFO2",        VIRUS_PAGE_A, 89, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"pan_lfo2_amount",      "Pan LFO2",         VIRUS_PAGE_A, 90, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page A: Output & Performance */
+    {"patch_volume",         "Volume",           VIRUS_PAGE_A, 91, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"panorama",             "Panorama",         VIRUS_PAGE_A, 10, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"transpose",            "Transpose",        VIRUS_PAGE_A, 93, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"key_mode",             "Key Mode",         VIRUS_PAGE_A, 94, 0,   5, VIRUS_MODEL_ALL, OPTS(opts_key_mode)},
+    {"unison_mode",          "Unison Mode",      VIRUS_PAGE_A, 97, 0,  15, VIRUS_MODEL_ALL, OPTS(opts_unison_mode)},
+    {"unison_detune",        "Unison Detune",    VIRUS_PAGE_A, 98, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"unison_pan_spread",    "Unison Pan",       VIRUS_PAGE_A, 99, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"unison_lfo_phase",     "Unison LFO Ph",    VIRUS_PAGE_A,100, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"input_mode",           "Input Mode",       VIRUS_PAGE_A,101, 0,   3, VIRUS_MODEL_ALL, OPTS(opts_input_mode)},
+    {"portamento_time",      "Portamento",       VIRUS_PAGE_A,  5, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page A: Chorus */
+    {"chorus_mix",           "Chorus Mix",       VIRUS_PAGE_A,105, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"chorus_rate",          "Chorus Rate",      VIRUS_PAGE_A,106, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"chorus_depth",         "Chorus Depth",     VIRUS_PAGE_A,107, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"chorus_delay",         "Chorus Delay",     VIRUS_PAGE_A,108, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"chorus_feedback",      "Chorus Fdbk",      VIRUS_PAGE_A,109, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"chorus_lfo_shape",     "Chorus LFO",       VIRUS_PAGE_A,110, 0,  67, VIRUS_MODEL_ALL, OPTS(opts_lfo_shape)},
+
+    /* Page A: Delay / Reverb */
+    /* Dly/Rev Mode (reverb + delay-pattern selector) is a Virus B/C feature; the
+     * Virus A has no reverb and no mode selector (byte 112 is unused on A). Gate to
+     * B/C so it isn't exposed as a bogus control when running a Virus A ROM. */
+    {"delay_reverb_mode",    "Dly/Rev Mode",     VIRUS_PAGE_A,112, 0,  26, VIRUS_MODEL_BC,  OPTS(opts_delay_reverb_mode)},
+    {"effect_send",          "Effect Send",      VIRUS_PAGE_A,113, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"delay_time",           "Delay Time",       VIRUS_PAGE_A,114, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"delay_feedback",       "Delay Fdbk",       VIRUS_PAGE_A,115, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"delay_rate_rev_decay", "Dly Rate/Decay",   VIRUS_PAGE_A,116, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"delay_depth",          "Delay Depth",      VIRUS_PAGE_A,117, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"delay_lfo_shape",      "Delay LFO",        VIRUS_PAGE_A,118, 0,   5, VIRUS_MODEL_ALL, OPTS(opts_delay_lfo_shape)},
+    {"delay_color",          "Delay Color",      VIRUS_PAGE_A,119, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page B: Arpeggiator */
+    {"arp_mode",             "Arp Mode",         VIRUS_PAGE_B,  1, 0,   6, VIRUS_MODEL_ALL, OPTS(opts_arp_mode)},
+    {"arp_pattern",          "Arp Pattern",      VIRUS_PAGE_B,  2, 0,  63, VIRUS_MODEL_ALL, NO_OPTS},
+    {"arp_octave_range",     "Arp Octaves",      VIRUS_PAGE_B,  3, 0,   3, VIRUS_MODEL_ALL, OPTS(opts_arp_octaves)},
+    {"arp_hold",             "Arp Hold",         VIRUS_PAGE_B,  4, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_off_on)},
+    {"arp_note_length",      "Arp Length",       VIRUS_PAGE_B,  5, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"arp_swing",            "Arp Swing",        VIRUS_PAGE_B,  6, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"arp_clock",            "Arp Clock",        VIRUS_PAGE_B, 17, 0,  17, VIRUS_MODEL_ALL, OPTS(opts_music_div)},
+
+    /* Page B: LFO 3 */
+    {"lfo3_rate",            "LFO3 Rate",        VIRUS_PAGE_B,  7, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo3_shape",           "LFO3 Shape",       VIRUS_PAGE_B,  8, 0,  67, VIRUS_MODEL_ALL, OPTS(opts_lfo_shape)},
+    {"lfo3_mode",            "LFO3 Mode",        VIRUS_PAGE_B,  9, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_lfo_mode)},
+    {"lfo3_keyfollow",       "LFO3 KeyFlw",      VIRUS_PAGE_B, 10, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo3_destination",     "LFO3 Dest",        VIRUS_PAGE_B, 11, 0,   5, VIRUS_MODEL_ALL, OPTS(opts_lfo3_dest)},
+    {"osc_lfo3_amount",      "Osc LFO3 Amt",    VIRUS_PAGE_B, 12, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo3_fadein_time",     "LFO3 FadeIn",      VIRUS_PAGE_B, 13, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo3_clock",           "LFO3 Clock",       VIRUS_PAGE_B, 21, 0,  21, VIRUS_MODEL_ALL, OPTS(opts_music_div)},
+
+    /* Page B: Clock / Sync */
+    {"clock_tempo",          "Clock Tempo",      VIRUS_PAGE_B, 16, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo1_clock",           "LFO1 Clock",       VIRUS_PAGE_B, 18, 0,  21, VIRUS_MODEL_ALL, OPTS(opts_music_div)},
+    {"lfo2_clock",           "LFO2 Clock",       VIRUS_PAGE_B, 19, 0,  21, VIRUS_MODEL_ALL, OPTS(opts_music_div)},
+    {"delay_clock",          "Delay Clock",      VIRUS_PAGE_B, 20, 0,  16, VIRUS_MODEL_ALL, OPTS(opts_music_div)},
+
+    /* Page B: Performance / Misc */
+    {"filter1_env_polarity", "Flt1 Env Pol",     VIRUS_PAGE_B, 30, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_env_polarity)},
+    {"filter2_env_polarity", "Flt2 Env Pol",     VIRUS_PAGE_B, 31, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_env_polarity)},
+    {"filter2_cutoff_link",  "Flt2 Cut Link",    VIRUS_PAGE_B, 32, 0,   1, VIRUS_MODEL_ALL, OPTS(opts_off_on)},
+    {"filter_keytrack_base", "Flt KeyTrk Base",  VIRUS_PAGE_B, 33, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    /* Osc FM Mode is available on ALL models (matches upstream + the reference Osirus
+     * plugin) — the Virus A's FM uses the internal modes (Pos-Tri/Tri/Wave/Noise). Do
+     * NOT gate to B/C: that would remove a working A control. (delay_reverb_mode above
+     * IS gated, but with hard evidence — byte 112 is constant on A; FM Mode has none.) */
+    {"osc_fm_mode",          "Osc FM Mode",      VIRUS_PAGE_B, 34, 0,  12, VIRUS_MODEL_ALL, OPTS(opts_osc_fm_mode)},
+    {"osc_init_phase",       "Osc Init Phase",   VIRUS_PAGE_B, 35, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"punch_intensity",      "Punch",            VIRUS_PAGE_B, 36, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"bender_range_up",      "Bend Up",          VIRUS_PAGE_B, 26, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"bender_range_down",    "Bend Down",        VIRUS_PAGE_B, 27, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"filter_select",        "Filter Select",    VIRUS_PAGE_B,122, 0,   2, VIRUS_MODEL_ALL, OPTS(opts_filter_select)},
+
+    /* Page B: Velocity Sensitivity */
+    {"osc1_shape_velocity",  "Osc1 Shp Vel",    VIRUS_PAGE_B, 47, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"osc2_shape_velocity",  "Osc2 Shp Vel",    VIRUS_PAGE_B, 48, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"pulsewidth_velocity",  "PW Velocity",      VIRUS_PAGE_B, 49, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"fm_amount_velocity",   "FM Amt Vel",       VIRUS_PAGE_B, 50, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"flt1_envamt_velocity", "Flt1 Env Vel",     VIRUS_PAGE_B, 54, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"flt2_envamt_velocity", "Flt2 Env Vel",     VIRUS_PAGE_B, 55, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"resonance1_velocity",  "Reso1 Vel",        VIRUS_PAGE_B, 56, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"resonance2_velocity",  "Reso2 Vel",        VIRUS_PAGE_B, 57, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"amp_velocity",         "Amp Velocity",     VIRUS_PAGE_B, 60, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"panorama_velocity",    "Pan Velocity",     VIRUS_PAGE_B, 61, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page B: Mod Matrix (slots 1-3) */
+    {"assign1_source",       "Asgn1 Src",        VIRUS_PAGE_B, 64, 0,  27, VIRUS_MODEL_ALL, OPTS(opts_mod_source)},
+    {"assign1_destination",  "Asgn1 Dst",        VIRUS_PAGE_B, 65, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"assign1_amount",       "Asgn1 Amt",        VIRUS_PAGE_B, 66, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"assign2_source",       "Asgn2 Src",        VIRUS_PAGE_B, 67, 0,  27, VIRUS_MODEL_ALL, OPTS(opts_mod_source)},
+    {"assign2_dest1",        "Asgn2 Dst1",       VIRUS_PAGE_B, 68, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"assign2_amount1",      "Asgn2 Amt1",       VIRUS_PAGE_B, 69, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"assign2_dest2",        "Asgn2 Dst2",       VIRUS_PAGE_B, 70, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"assign2_amount2",      "Asgn2 Amt2",       VIRUS_PAGE_B, 71, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"assign3_source",       "Asgn3 Src",        VIRUS_PAGE_B, 72, 0,  27, VIRUS_MODEL_ALL, OPTS(opts_mod_source)},
+    {"assign3_dest1",        "Asgn3 Dst1",       VIRUS_PAGE_B, 73, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"assign3_amount1",      "Asgn3 Amt1",       VIRUS_PAGE_B, 74, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"assign3_dest2",        "Asgn3 Dst2",       VIRUS_PAGE_B, 75, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"assign3_amount2",      "Asgn3 Amt2",       VIRUS_PAGE_B, 76, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"assign3_dest3",        "Asgn3 Dst3",       VIRUS_PAGE_B, 77, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"assign3_amount3",      "Asgn3 Amt3",       VIRUS_PAGE_B, 78, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo1_assign_dest",     "LFO1 Asgn Dst",   VIRUS_PAGE_B, 79, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"lfo1_assign_amount",   "LFO1 Asgn Amt",   VIRUS_PAGE_B, 80, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+    {"lfo2_assign_dest",     "LFO2 Asgn Dst",   VIRUS_PAGE_B, 81, 0, 122, VIRUS_MODEL_ALL, OPTS(opts_mod_dest)},
+    {"lfo2_assign_amount",   "LFO2 Asgn Amt",   VIRUS_PAGE_B, 82, 0, 127, VIRUS_MODEL_ALL, NO_OPTS},
+
+    /* Page B: Osc 3 (B/C only) */
+    {"osc3_mode",            "Osc3 Mode",        VIRUS_PAGE_B, 41, 0,  67, VIRUS_MODEL_BC, OPTS(opts_osc3_mode)},
+    {"osc3_volume",          "Osc3 Volume",      VIRUS_PAGE_B, 42, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"osc3_semitone",        "Osc3 Semi",        VIRUS_PAGE_B, 43, 16,112, VIRUS_MODEL_BC, NO_OPTS},
+    {"osc3_detune",          "Osc3 Detune",      VIRUS_PAGE_B, 44, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+
+    /* Page B: Phaser (B/C only) */
+    {"phaser_mode",          "Phaser Mode",      VIRUS_PAGE_B, 84, 0,   6, VIRUS_MODEL_BC, OPTS(opts_phaser_mode)},
+    {"phaser_mix",           "Phaser Mix",       VIRUS_PAGE_B, 85, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"phaser_rate",          "Phaser Rate",      VIRUS_PAGE_B, 86, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"phaser_depth",         "Phaser Depth",     VIRUS_PAGE_B, 87, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"phaser_frequency",     "Phaser Freq",      VIRUS_PAGE_B, 88, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"phaser_feedback",      "Phaser Fdbk",      VIRUS_PAGE_B, 89, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"phaser_spread",        "Phaser Spread",    VIRUS_PAGE_B, 90, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+
+    /* Page B: EQ (B/C only) */
+    {"low_eq_freq",          "Lo EQ Freq",       VIRUS_PAGE_B, 45, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"high_eq_freq",         "Hi EQ Freq",       VIRUS_PAGE_B, 46, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"mid_eq_gain",          "Mid EQ Gain",      VIRUS_PAGE_B, 92, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"mid_eq_freq",          "Mid EQ Freq",      VIRUS_PAGE_B, 93, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"mid_eq_q",             "Mid EQ Q",         VIRUS_PAGE_B, 94, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"low_eq_gain",          "Lo EQ Gain",       VIRUS_PAGE_B, 95, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"high_eq_gain",         "Hi EQ Gain",       VIRUS_PAGE_B, 96, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+
+    /* Page B: Distortion (B/C only) */
+    {"distortion_curve",     "Dist Curve",       VIRUS_PAGE_B,100, 0,  11, VIRUS_MODEL_BC, OPTS(opts_dist_curve)},
+    {"distortion_intensity", "Dist Intensity",   VIRUS_PAGE_B,101, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"bass_intensity",       "Analog Boost",     VIRUS_PAGE_B, 97, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"bass_tune",            "Boost Tune",       VIRUS_PAGE_B, 98, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+
+    /* Page B: Mod Matrix Slots 4-6 (B/C only) */
+    {"assign4_source",       "Asgn4 Src",        VIRUS_PAGE_B,103, 0,  27, VIRUS_MODEL_BC, OPTS(opts_mod_source)},
+    {"assign4_destination",  "Asgn4 Dst",        VIRUS_PAGE_B,104, 0, 122, VIRUS_MODEL_BC, OPTS(opts_mod_dest)},
+    {"assign4_amount",       "Asgn4 Amt",        VIRUS_PAGE_B,105, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"assign5_source",       "Asgn5 Src",        VIRUS_PAGE_B,106, 0,  27, VIRUS_MODEL_BC, OPTS(opts_mod_source)},
+    {"assign5_destination",  "Asgn5 Dst",        VIRUS_PAGE_B,107, 0, 122, VIRUS_MODEL_BC, OPTS(opts_mod_dest)},
+    {"assign5_amount",       "Asgn5 Amt",        VIRUS_PAGE_B,108, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+    {"assign6_source",       "Asgn6 Src",        VIRUS_PAGE_B,109, 0,  27, VIRUS_MODEL_BC, OPTS(opts_mod_source)},
+    {"assign6_destination",  "Asgn6 Dst",        VIRUS_PAGE_B,110, 0, 122, VIRUS_MODEL_BC, OPTS(opts_mod_dest)},
+    {"assign6_amount",       "Asgn6 Amt",        VIRUS_PAGE_B,111, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+
+    /* Page B: Vocoder / Input (C only) */
+    {"input_follower_mode",  "Input Follower",   VIRUS_PAGE_B, 38, 0,   9, VIRUS_MODEL_C, OPTS(opts_input_follower)},
+    {"vocoder_mode",         "Vocoder Mode",     VIRUS_PAGE_B, 39, 0,  12, VIRUS_MODEL_C, OPTS(opts_vocoder_mode)},
+    {"input_ringmod",        "Input RingMod",    VIRUS_PAGE_B, 99, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
+};
+static const int NUM_PARAMS = sizeof(g_params) / sizeof(g_params[0]);
+static constexpr int VIRUS_MAX_BANKS = 32;
+static constexpr int VIRUS_MAX_PRESETS_PER_BANK = 128;
+static constexpr int VIRUS_PRESET_NAME_BYTES = 24;
+static constexpr int VIRUS_MAX_USER_BANKS = 16;
+
+/* =====================================================================
+ * User preset banks (loaded from .mid files in banks/ folder)
+ * ===================================================================== */
+
+struct user_bank_t {
+    char name[32];
+    virusLib::ROMFile::TPreset presets[128];
+    int preset_count;
+};
+
+/* =====================================================================
+ * Instance state shared by the host threads and the emulator thread
+ * (plain heap memory here; the Move module mapped it MAP_SHARED across a fork)
+ * ===================================================================== */
+
+struct virus_shm_t {
+    /* Audio ring buffer (child writes, parent reads) */
+    int16_t audio_ring[AUDIO_RING_SIZE * 2];
+    volatile int ring_read;
+    volatile int ring_write;
+
+    /* MIDI input FIFO (parent writes, child reads)
+     * Format: [len, byte0, byte1, byte2, ...] per message, len=1..8 */
+    uint8_t midi_buf[MIDI_FIFO_SIZE];
+    volatile int midi_read;
+    volatile int midi_write;
+
+    /* Control flags */
+    volatile int child_ready;       /* child sets when boot complete */
+    volatile int child_shutdown;    /* parent sets to request shutdown */
+    volatile int child_alive;       /* child increments periodically */
+    volatile int emu_exited;        /* emulator thread has left child_main (boot failed, or shut down) */
+
+    /* Status (child writes, parent reads) */
+    volatile int initialized;
+    volatile int loading_complete;
+    char loading_status[128];
+    char load_error[256];
+    char preset_name[64];
+    char bank_name[32];
+    volatile int current_bank;
+    volatile int current_preset;
+    volatile int bank_count;
+    volatile int preset_count;
+    volatile int preset_name_cache_ready;
+    char preset_name_cache[VIRUS_MAX_BANKS][VIRUS_MAX_PRESETS_PER_BANK][VIRUS_PRESET_NAME_BYTES];
+    volatile int octave_transpose;
+    volatile int cc_values[128];
+    uint8_t cc_seen[128];
+    volatile int cc_values_b[128];  /* Page B parameter values */
+    uint8_t cc_seen_b[128];         /* Page B parameter seen flags */
+
+    /* Preset-load sync handshake (parent requests, child confirms). A patch
+     * change updates cc_values asynchronously in the child once the emulated
+     * firmware has loaded the new single; get_param("state") blocks briefly on
+     * this so a remote-UI re-read after a preset switch returns the NEW values
+     * instead of the previous patch's. */
+    volatile uint32_t preset_req_gen;   /* parent bumps when it pushes a program change */
+    volatile uint32_t preset_done_gen;  /* child sets = req_gen after it syncs cc_values */
+
+    /* Profiling */
+    volatile int underrun_count;
+    volatile int emu_blocks;
+    volatile int render_count;
+    volatile int64_t prof_process_us_total;
+    volatile int prof_process_max_us;
+    volatile float prof_peak_level;
+    volatile int prof_ring_min;
+    volatile int64_t prof_start_us;
+
+    /* Module directory (set before the emulator thread starts) */
+    char module_dir[256];
+
+    /* DSP clock percent (parent writes, child reads and applies) */
+    volatile int dsp_clock_percent;  /* 0 = auto (100 for A, 45 for B, 35 for C/others) */
+    volatile int dsp_clock_applied;  /* last value applied by child */
+    volatile int dsp_cpu_pct;        /* CPU of the gearmulator "DSP" thread(s) as a percent of one core (emulator thread, every ~2 s) */
+    char rom_model_name[16];         /* "A", "B", "C", etc. */
+
+    /* Output gain (parent writes, child reads — applied during resample) */
+    volatile int gain_percent;       /* 0 = auto (70), else 1..100 */
+
+    /* ROM selection (child enumerates, parent selects) */
+    volatile int rom_index;          /* which ROM to load (0-based) */
+    volatile int rom_count;          /* how many ROMs found (child writes) */
+    char rom_names[8][64];           /* ROM display names (child writes) */
+
+    /* Direct parameter change table (parent writes, child reads & clears).
+     * Uses SysEx→send()→HDI08 path which is the only way the DSP firmware
+     * responds to parameter changes for many params (wave select, etc.). */
+    struct {
+        volatile uint8_t value;
+        volatile uint8_t dirty;
+    } pending_params[256];           /* index = page*128 + cc */
+
+    /* --- Self-contained single capture/inject (state portability) ----------
+     * current_single: child dumps the live EditBuffer (512-byte single) here so
+     * the parent can embed the ACTUAL patch in saved state — survives bank/
+     * preset renumbering and deletion. pending_single: parent stages a raw
+     * single for the child to writeSingle() straight into the EditBuffer on
+     * recall, bypassing the fragile bank/preset reference entirely. */
+    volatile uint8_t current_single[512];     /* child keeps this continuously fresh */
+    volatile int current_single_valid;
+    volatile uint8_t pending_single[512];
+    volatile uint32_t pending_single_req_gen; /* parent bumps to inject pending_single */
+    volatile uint32_t pending_single_done_gen;/* child sets = req after writing */
+
+    /* Actual preset count of the current bank (child writes on bank change).
+     * User banks can hold fewer than the global preset_count; the UI/clamps use
+     * this so you can't select a nonexistent preset (which silently failed). */
+    volatile int cur_bank_preset_count;
+
+    /* A bank/preset the host set before the emulator finished booting (a project restore); applied once the banks are known */
+    volatile int boot_bank;
+    volatile int boot_preset;
+
+    /* User preset banks and the ROM's bank count: per instance, since there is no process boundary any more */
+    user_bank_t user_banks[VIRUS_MAX_USER_BANKS];
+    int user_bank_count;
+    int rom_bank_count;
+};
+
+
+
+/* =====================================================================
+ * Shared memory ring buffer helpers
+ * ===================================================================== */
+
+static int shm_ring_available(virus_shm_t *shm) {
+    int avail = shm->ring_write - shm->ring_read;
+    if (avail < 0) avail += AUDIO_RING_SIZE;
+    return avail;
+}
+
+static int shm_ring_free(virus_shm_t *shm) {
+    return AUDIO_RING_SIZE - 1 - shm_ring_available(shm);
+}
+
+/* MIDI FIFO helpers */
+static int midi_fifo_available(virus_shm_t *shm) {
+    int avail = shm->midi_write - shm->midi_read;
+    if (avail < 0) avail += MIDI_FIFO_SIZE;
+    return avail;
+}
+
+static int midi_fifo_free(virus_shm_t *shm) {
+    return MIDI_FIFO_SIZE - 1 - midi_fifo_available(shm);
+}
+
+/* CPU ticks used so far by every thread of this process named "DSP" (gearmulator's emulator threads); called from the emulator thread
+ * every ~2 s only, never from the host's calls */
+static long dsp_thread_ticks(void) {
+    long total = 0;
+    DIR *d = opendir("/proc/self/task");
+    if (!d) return 0;
+    while (struct dirent *e = readdir(d)) {
+        if (e->d_name[0] < '0' || e->d_name[0] > '9') continue;
+        char path[64], line[512];
+        snprintf(path, sizeof path, "/proc/self/task/%s/comm", e->d_name);
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        const bool dsp = fgets(line, sizeof line, f) && strncmp(line, "DSP", 3) == 0;
+        fclose(f);
+        if (!dsp) continue;
+        snprintf(path, sizeof path, "/proc/self/task/%s/stat", e->d_name);
+        f = fopen(path, "r");
+        if (!f) continue;
+        if (fgets(line, sizeof line, f)) {
+            const char *q = strrchr(line, ')');      /* after "(comm)": state is field 3, utime 14, stime 15 */
+            unsigned long ut = 0, st = 0;
+            if (q && sscanf(q + 2, "%*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u %lu %lu", &ut, &st) == 2) total += (long)(ut + st);
+        }
+        fclose(f);
+    }
+    closedir(d);
+    return total;
+}
+
+/* The emulator thread's own state, for helpers that take no shm argument (one emulator thread per instance). */
+static thread_local virus_shm_t *t_shm = nullptr;
+
+static void clear_param_overrides(virus_shm_t *shm) {
+    if (!shm) return;
+    memset(shm->cc_seen, 0, sizeof(shm->cc_seen));
+    memset(shm->cc_seen_b, 0, sizeof(shm->cc_seen_b));
+    memset((void*)shm->cc_values, 0, sizeof(shm->cc_values));
+    memset((void*)shm->cc_values_b, 0, sizeof(shm->cc_values_b));
+}
+
+static int model_name_to_level(const char *name) {
+    if (!name || !name[0]) return 0;
+    if (name[0] == 'C' || name[0] == 'c') return 2;
+    if (name[0] == 'B' || name[0] == 'b') return 1;
+    return 0; /* A or unknown */
+}
+
+static bool param_available_for_model(const virus_param_t *p, const char *model_name) {
+    int level = model_name_to_level(model_name);
+    return p->model_min <= level;
+}
+
+/* Display name, adjusted for model. Some FX param labels are dual-purpose on B/C
+ * (delay rate / reverb decay) but the Virus A has only the delay, so drop the
+ * reverb wording on A. */
+static const char *param_display_name(const virus_param_t *p, int model_level) {
+    if (model_level < VIRUS_MODEL_BC && strcmp(p->key, "delay_rate_rev_decay") == 0)
+        return "Delay Rate";
+    return p->name;
+}
+
+static uint8_t bank_index_to_midi_lsb(int bank_index, int bank_count) {
+    int idx = bank_index;
+    int max_idx = bank_count > 0 ? bank_count - 1 : 0;
+    if (idx < 0) idx = 0;
+    if (idx > max_idx) idx = max_idx;
+    int midi = idx + 1; /* Access uses 1-based bank numbers: A=1..H=8. */
+    if (midi < 1) midi = 1;
+    if (midi > 127) midi = 127;
+    return (uint8_t)midi;
+}
+
+/*
+ * Is the emulator still coming up?
+ *
+ * create_instance returns in ~2 ms and the ROM load, DSP boot and warm-up all
+ * happen on the boot thread and on the emulator thread, so there is a window of
+ * seconds where the instance exists and answers get_param but knows nothing
+ * yet. This is the readiness test the state restore and render_block already
+ * used inline; it is a function now because the name keys below need it too,
+ * and three spellings of one condition is how they drift.
+ */
+static inline bool shm_still_loading(const virus_shm_t *shm) {
+    return !shm || !shm->loading_complete || !shm->child_ready;
+}
+
+static const char *shm_lookup_preset_name(virus_shm_t *shm, int bank, int preset) {
+    if (!shm || !shm->preset_name_cache_ready) return nullptr;
+    if (bank < 0 || preset < 0) return nullptr;
+    if (bank >= shm->bank_count || preset >= shm->preset_count) return nullptr;
+    if (bank >= VIRUS_MAX_BANKS || preset >= VIRUS_MAX_PRESETS_PER_BANK) return nullptr;
+    const char *name = shm->preset_name_cache[bank][preset];
+    if (!name[0]) return nullptr;
+    return name;
+}
+
+static void shm_refresh_current_preset_name(virus_shm_t *shm) {
+    if (!shm) return;
+    const char *name = shm_lookup_preset_name(shm, shm->current_bank, shm->current_preset);
+    if (name) {
+        snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "%s", name);
+        return;
+    }
+    /*
+     * "---" is the right answer for a preset slot that genuinely has no name,
+     * and the WRONG one for the several seconds before the ROM is read: the
+     * host puts preset_name in the editor header, so the whole boot showed a
+     * row of dashes with nothing to say it was temporary. Reported from the
+     * device as wanting it to "say loading and not (---)".
+     *
+     * loading_status rather than a fixed word because the boot thread already
+     * maintains it and it is more useful: "Loading ROM...", "Booting DSP...",
+     * "Warming up...". The host truncates to the header width.
+     */
+    if (shm_still_loading(shm) && shm->loading_status[0]) {
+        snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "%s",
+                 (const char*)shm->loading_status);
+        return;
+    }
+    snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "---");
+}
+
+static void midi_fifo_push(virus_shm_t *shm, const uint8_t *msg, int len) {
+    if (len < 1 || len > 8) return;
+    if (midi_fifo_free(shm) < len + 1) return; /* drop if full */
+    int wr = shm->midi_write;
+    shm->midi_buf[wr] = (uint8_t)len;
+    wr = (wr + 1) % MIDI_FIFO_SIZE;
+    for (int i = 0; i < len; i++) {
+        shm->midi_buf[wr] = msg[i];
+        wr = (wr + 1) % MIDI_FIFO_SIZE;
+    }
+    __sync_synchronize();   /* publish payload before the index (ARM weak ordering) */
+    shm->midi_write = wr;
+}
+
+static void send_param_midi(virus_shm_t *shm, const virus_param_t *p, int value) {
+    if (p->page == VIRUS_PAGE_A) {
+        shm->cc_values[p->cc] = value;
+        shm->cc_seen[p->cc] = 1;
+    } else {
+        shm->cc_values_b[p->cc] = value;
+        shm->cc_seen_b[p->cc] = 1;
+    }
+    /* Write to shared-memory pending table. Child picks up latest value
+     * once per audio block and sends via SysEx→send()→HDI08 write. */
+    int idx = p->page * 128 + p->cc;
+    shm->pending_params[idx].value = (uint8_t)value;
+    __sync_synchronize();
+    shm->pending_params[idx].dirty = 1;
+}
+
+static int get_param_value(virus_shm_t *shm, const virus_param_t *p) {
+    if (p->page == VIRUS_PAGE_A)
+        return shm->cc_values[p->cc];
+    else
+        return shm->cc_values_b[p->cc];
+}
+
+static bool is_param_seen(virus_shm_t *shm, const virus_param_t *p) {
+    if (p->page == VIRUS_PAGE_A)
+        return shm->cc_seen[p->cc] != 0;
+    else
+        return shm->cc_seen_b[p->cc] != 0;
+}
+
+/* =====================================================================
+ * Instance structure (parent process only)
+ * ===================================================================== */
+
+struct virus_instance_t {
+    virus_shm_t *shm;
+    pthread_t emu_thread;               /* the emulator thread (child_main) */
+    volatile int emu_thread_joinable;   /* emu_thread holds an unjoined thread */
+    /* Boot AND restart workers all run on boot_thread and are JOINABLE, never
+     * detached (start_boot_worker). destroy_instance joins whichever is live:
+     * once the host dlclose()s dsp.so it is really unmapped, and a detached
+     * restart worker still sleeping / waiting for the emulator thread would
+     * then execute an unmapped page (and touch the freed instance) and take
+     * MoveOriginal down. boot_thread_running only says "a worker is busy";
+     * a worker clears it and is still returning through our code, so it is
+     * never a substitute for the join. */
+    pthread_t boot_thread;
+    volatile int boot_thread_running;
+    volatile int boot_thread_joinable;   /* boot_thread holds an unjoined thread */
+    volatile int destroying;             /* destroy_instance waiting: workers bail out */
+    char *pending_state;
+    int pending_state_valid;
+
+    /* Bug #14: set after a self-contained state restore (which injects a single
+     * into the EditBuffer without a Program Change, leaving current_bank/preset
+     * naming an unloaded slot). Forces the next preset/bank selection to bypass
+     * the "already current" no-op guards so the user isn't stuck on the patch.
+     * Separate flags per axis: a single shared flag would let a same-index *bank*
+     * reselect clear it and re-strand a same-index *preset* reselect (and vice
+     * versa). Each guard clears only its own flag. */
+    int force_next_preset;
+    int force_next_bank;
+
+    /* Per-note pressure tracking for polypressure → channel pressure.
+     * The Virus only has mono aftertouch (ChanPres), so we convert
+     * poly aftertouch by taking the max pressure across active notes. */
+    uint8_t note_pressure[128];
+
+    /* BANKS page: which 28-patch page of the current bank the patch list shows */
+    int patch_page;
+
+    /* The transposed note actually emitted at note-on, indexed by the ORIGINAL
+     * (untransposed) note number; -1 = not held. Note-off replays this exact value
+     * so changing octave_transpose (encoder or state restore) while a key is held
+     * can't strand the voice, and clamp collisions still release. Touched only on
+     * the host SPI thread (on_midi + set_param are serialized there). */
+    int16_t held_note[128];
+
+    /* CR-1 child-liveness watchdog state (render thread). A crashed/hung child
+     * freezes shm->child_alive while the ring drains to permanent silence; we
+     * detect a frozen heartbeat during underrun and kick a respawn. */
+    int wd_alive_last;   /* last-seen child_alive while underrunning */
+    int wd_stall;        /* consecutive underrunning renders with frozen heartbeat */
+
+    /* R1: set when the user edits a param (knob/CC) and cleared on a real preset/bank
+     * load, restore, or child restart. get_state's empty-bail (which protects a good
+     * self-contained slot during the no-valid-single window) fires only when NO user edit
+     * is pending — so edits made before the first preset load still serialize (referential,
+     * matching upstream) instead of being silently dropped. */
+    int params_user_dirty;
+};
+
+/* =====================================================================
+ * Child process — all DSP work happens here
+ * ===================================================================== */
+
+/* Resample ratio: 46875 Hz source → 44100 Hz output */
+static constexpr double RESAMPLE_RATIO = 46875.0 / 44100.0;
+#define RESAMPLE_MAX_OUT (EMU_CHUNK + 4)
+
+typedef struct {
+    double phase;          /* fractional read position in source samples */
+    float  hl[3], hr[3];   /* 3 trailing source samples → leading context next block */
+} resamp_state_t;
+
+/* MAME 4-point cubic basis (TUS mameResamplers): f0(t)=(t-t^3)/6, f1(t)=t+(t^2-t^3)/2;
+ * out = -s0*f0(1-p) + s1*f1(1-p) + s2*f1(p) - s3*f0(p)  (p=0→s1, p=1→s2). */
+static inline float cubic4(float s0, float s1, float s2, float s3, float p) {
+    float q = 1.0f - p;
+    float f0p = (p - p*p*p) * (1.0f/6.0f);
+    float f1p = p + (p*p - p*p*p) * 0.5f;
+    float f0q = (q - q*q*q) * (1.0f/6.0f);
+    float f1q = q + (q*q - q*q*q) * 0.5f;
+    return -s0*f0q + s1*f1q + s2*f1p - s3*f0p;
+}
+
+/* Resample one stereo block of float[-1,1] @46875 → int16 @44100 with gain, using
+ * 4-point cubic interpolation (cleanest / most transparent; A/B-tested vs linear
+ * and a MAME box-lofi mode — cubic won clearly, so it's the only path). */
+static int resample_block(resamp_state_t *st,
+                          const float *proc_l, const float *proc_r,
+                          int n, float gain, int16_t *out, int max_out) {
+    if (n < 3) return 0;
+
+    /* ext = [hist0,hist1,hist2, src...]: a source position p maps to ext[p+3], so a
+     * slightly-negative carried phase reads the deferred boundary samples from history. */
+    float ext_l[3 + EMU_CHUNK], ext_r[3 + EMU_CHUNK];
+    ext_l[0]=st->hl[0]; ext_l[1]=st->hl[1]; ext_l[2]=st->hl[2];
+    ext_r[0]=st->hr[0]; ext_r[1]=st->hr[1]; ext_r[2]=st->hr[2];
+    memcpy(ext_l+3, proc_l, n*sizeof(float));
+    memcpy(ext_r+3, proc_r, n*sizeof(float));
+
+    double phase = st->phase;
+    double limit = (double)n - 2.0;         /* leave room for the s3 (+2) cubic tap */
+    int oc = 0;
+    while (phase < limit && oc < max_out) {
+        int ip = (int)floor(phase);
+        float f = (float)(phase - ip);
+        int b = ip + 3;                     /* ext index of s1 */
+        float l = cubic4(ext_l[b-1], ext_l[b], ext_l[b+1], ext_l[b+2], f);
+        float r = cubic4(ext_r[b-1], ext_r[b], ext_r[b+1], ext_r[b+2], f);
+        int32_t li = (int32_t)(l * gain * 32767.0f);
+        int32_t ri = (int32_t)(r * gain * 32767.0f);
+        if (li > 32767) li = 32767; if (li < -32768) li = -32768;
+        if (ri > 32767) ri = 32767; if (ri < -32768) ri = -32768;
+        out[oc*2+0] = (int16_t)li;
+        out[oc*2+1] = (int16_t)ri;
+        oc++;
+        phase += RESAMPLE_RATIO;
+    }
+    st->phase = phase - (double)n;          /* carry remainder (may be slightly negative) */
+    st->hl[0]=proc_l[n-3]; st->hl[1]=proc_l[n-2]; st->hl[2]=proc_l[n-1];
+    st->hr[0]=proc_r[n-3]; st->hr[1]=proc_r[n-2]; st->hr[2]=proc_r[n-1];
+    return oc;
+}
+
+static void child_send_midi(virusLib::Microcontroller *mc, const uint8_t *msg, int len) {
+    if (!mc || len < 1) return;
+    synthLib::SMidiEvent ev(synthLib::MidiEventSource::Host,
+                            msg[0],
+                            len > 1 ? msg[1] : 0,
+                            len > 2 ? msg[2] : 0);
+    mc->sendMIDI(ev);
+}
+
+static bool child_use_mc_preset_map(virusLib::ROMFile *rom) {
+    return rom && rom->getModel() == virusLib::DeviceModel::A;
+}
+
+static int child_map_browser_bank_to_mc_bank(virusLib::ROMFile *rom, int bank) {
+    if (bank < 0) return bank;
+    if (!child_use_mc_preset_map(rom)) return bank;
+    /* Virus A MC single-bank table starts with 2 RAM banks, then ROM A..H.
+     * Browser bank 0..7 should map to ROM banks, not RAM mirror slots. */
+    return bank + 2;
+}
+
+static bool child_get_single_preset(virusLib::Microcontroller *mc,
+                                    virusLib::ROMFile *rom,
+                                    int bank,
+                                    int preset,
+                                    virusLib::ROMFile::TPreset *out) {
+    if (!out || bank < 0 || preset < 0) return false;
+
+    /* Check user banks (appended after ROM banks) */
+    if (bank >= t_shm->rom_bank_count && t_shm->user_bank_count > 0) {
+        int ub = bank - t_shm->rom_bank_count;
+        if (ub >= 0 && ub < t_shm->user_bank_count &&
+            preset < t_shm->user_banks[ub].preset_count) {
+            *out = t_shm->user_banks[ub].presets[preset];
+            return true;
+        }
+        return false;
+    }
+
+    if (child_use_mc_preset_map(rom) && mc) {
+        const int mapped_bank = child_map_browser_bank_to_mc_bank(rom, bank);
+        if (mapped_bank < 0 || mapped_bank >= VIRUS_MAX_BANKS || preset >= VIRUS_MAX_PRESETS_PER_BANK)
+            return false;
+        return mc->requestSingle(virusLib::fromArrayIndex((uint8_t)mapped_bank), (uint8_t)preset, *out);
+    }
+
+    if (!rom) return false;
+    return rom->getSingle(bank, preset, *out);
+}
+
+static bool child_validate_virus_a_bank(virusLib::Microcontroller *mc,
+                                        virusLib::ROMFile *rom,
+                                        int bank,
+                                        int preset_count) {
+    if (!child_use_mc_preset_map(rom)) return true;
+    if (!mc || !rom || bank < 0 || preset_count <= 0) return false;
+
+    int p0 = 0;
+    int p1 = preset_count > 1 ? 1 : 0;
+    int plast = preset_count - 1;
+    const int probes[3] = {p0, p1, plast};
+
+    for (int i = 0; i < 3; ++i) {
+        int p = probes[i];
+        virusLib::ROMFile::TPreset pd{};
+        if (!child_get_single_preset(mc, rom, bank, p, &pd)) return false;
+
+        if (pd[2] != (uint8_t)bank) return false;
+        if (pd[3] != (uint8_t)p) return false;
+        if (virusLib::ROMFile::getSingleName(pd).size() != 10) return false;
+    }
+
+    return true;
+}
+
+static void child_build_preset_name_cache(virus_shm_t *shm,
+                                          virusLib::Microcontroller *mc,
+                                          virusLib::ROMFile *rom);
+static void child_update_preset_name(virus_shm_t *shm,
+                                     virusLib::Microcontroller *mc,
+                                     virusLib::ROMFile *rom);
+static int child_detect_valid_bank_count(virusLib::Microcontroller *mc,
+                                         virusLib::ROMFile *rom,
+                                         int fallback_bank_count);
+
+/* Populate cc_values / cc_values_b from preset data so the UI
+ * reflects the actual preset values after a program change.
+ * Preset layout: Page A = bytes 0-127, Page B = bytes 128-255. */
+static void child_sync_params_from_preset(virus_shm_t *shm,
+                                          const virusLib::ROMFile::TPreset &single) {
+    for (int i = 0; i < NUM_PARAMS; i++) {
+        int offset = g_params[i].page == VIRUS_PAGE_A
+            ? g_params[i].cc
+            : g_params[i].cc + 128;
+        int val = single[offset];
+        if (val < g_params[i].min_val) val = g_params[i].min_val;
+        if (val > g_params[i].max_val) val = g_params[i].max_val;
+        if (g_params[i].page == VIRUS_PAGE_A) {
+            shm->cc_values[g_params[i].cc] = val;
+            shm->cc_seen[g_params[i].cc] = 1;
+        } else {
+            shm->cc_values_b[g_params[i].cc] = val;
+            shm->cc_seen_b[g_params[i].cc] = 1;
+        }
+    }
+}
+
+/* Process at most max_msgs MIDI messages per call.
+ * Rate-limiting spreads note-on voice allocation across emu blocks,
+ * preventing DSP cycle bursts that cause audio dropouts. */
+/* Drain pending parameter changes from shared memory.
+ * Called once per emu loop iteration. Only dirty params are sent. */
+static void child_drain_pending_params(virus_shm_t *shm,
+                                       virusLib::Microcontroller *mc) {
+    if (!shm || !mc) return;
+    for (int i = 0; i < 256; i++) {
+        if (!shm->pending_params[i].dirty) continue;
+        shm->pending_params[i].dirty = 0;
+        __sync_synchronize();
+        uint8_t page = 0x70 + (i / 128);  /* PAGE_A=0x70, PAGE_B=0x71 */
+        uint8_t cc = i & 0x7F;
+        uint8_t val = shm->pending_params[i].value;
+        synthLib::SysexBuffer sysex = {
+            0xF0, 0x00, 0x20, 0x33, 0x01, virusLib::OMNI_DEVICE_ID,
+            page, 0x00 /* part 0 — DSP expects 0 in single mode */, cc, val, 0xF7
+        };
+        std::vector<synthLib::SMidiEvent> responses;
+        mc->sendSysex(sysex, responses, synthLib::MidiEventSource::Host);
+    }
+}
+
+/* Actual number of presets in a bank. User banks may hold fewer than the global
+ * ROM preset_count. Emulator-thread side: reads t_shm->user_banks. */
+static int bank_preset_count(virus_shm_t *shm, int bank) {
+    if (bank >= t_shm->rom_bank_count && t_shm->user_bank_count > 0) {
+        int ub = bank - t_shm->rom_bank_count;
+        if (ub >= 0 && ub < t_shm->user_bank_count) return t_shm->user_banks[ub].preset_count;
+    }
+    return shm ? shm->preset_count : 0;
+}
+
+/* Self-contained single I/O (state portability). Parent stages a raw single to
+ * inject (recall that doesn't depend on bank/preset indices) and/or requests a
+ * dump of the live EditBuffer for state save. requestSingle(EditBuffer) is
+ * synchronous (returns m_singleEditBuffer), so this captures the true current
+ * sound including live param edits. */
+static void child_handle_single_io(virus_shm_t *shm,
+                                    virusLib::Microcontroller *mc,
+                                    virusLib::ROMFile *rom) {
+    if (!shm || !mc) return;
+
+    /* Inject: write a staged single straight into the EditBuffer. */
+    if (shm->pending_single_req_gen != shm->pending_single_done_gen) {
+        uint32_t req = shm->pending_single_req_gen;
+        virusLib::ROMFile::TPreset single{};
+        for (int i = 0; i < 512; i++) single[i] = shm->pending_single[i];
+        mc->writeSingle(virusLib::BankNumber::EditBuffer, virusLib::SINGLE, single);
+        child_sync_params_from_preset(shm, single);
+        for (int i = 0; i < 512; i++) shm->current_single[i] = single[i];
+        __sync_synchronize();   /* publish the 512 bytes before the valid flag */
+        shm->current_single_valid = 1;
+        child_update_preset_name(shm, mc, rom);
+        __sync_synchronize();
+        shm->pending_single_done_gen = req;
+    }
+
+    /* Keep current_single near-fresh so a state read never has to block on a
+     * dump. Throttled — every 8 loop iterations is well under any state-read
+     * cadence (autosave ~10s, saves are user-paced).
+     *
+     * Use peekSingleEditBuffer(), NOT requestSingle(EditBuffer): the latter calls
+     * receiveUpgradedPreset(), which mutates the shared HDI08 TX parser. Driving that
+     * from this emu-loop refresh races the audio thread feeding the same parser via
+     * m_hdi08.exec() and could permanently latch the preset-receive confirmation,
+     * stalling all subsequent preset loads (stuck patch; direct param edits still
+     * work). peekSingleEditBuffer() only copies the cached buffer under the mutex. */
+    static int refresh_ctr = 0;
+    if (++refresh_ctr >= 8 && shm->current_single_valid) {
+        /* Only refresh an ALREADY-loaded patch (capture live param edits). Do NOT let
+         * the passive refresh set current_single_valid from scratch: at boot the child
+         * loads the default preset, and a refresh that flipped valid=1 would let an
+         * autosave persist the DEFAULT single and clobber the real patch's slot file
+         * before the restore inject runs. valid is set only by a real load (Program
+         * Change in child_process_midi_fifo) or a self-contained restore inject above. */
+        refresh_ctr = 0;
+        virusLib::ROMFile::TPreset single{};
+        if (mc->peekSingleEditBuffer(single)) {
+            for (int i = 0; i < 512; i++) shm->current_single[i] = single[i];
+        }
+    }
+}
+
+static void child_process_midi_fifo(virus_shm_t *shm,
+                                    virusLib::Microcontroller *mc,
+                                    virusLib::ROMFile *rom,
+                                    int max_msgs = 2) {
+    int processed = 0;
+    while (midi_fifo_available(shm) > 0 && processed < max_msgs) {
+        __sync_synchronize();   /* acquire: read payload only after observing midi_write */
+        int rd = shm->midi_read;
+        int len = shm->midi_buf[rd];
+        rd = (rd + 1) % MIDI_FIFO_SIZE;
+        if (len < 1 || len > 8 || midi_fifo_available(shm) < len + 1) break;
+        uint8_t msg[8];
+        for (int i = 0; i < len; i++) {
+            msg[i] = shm->midi_buf[rd];
+            rd = (rd + 1) % MIDI_FIFO_SIZE;
+        }
+        shm->midi_read = rd;
+
+        /* Direct parameter change via SysEx → Microcontroller::send() → HDI08.
+         * The DSP firmware only responds to direct HDI08 writes for many params
+         * (wave select, etc.), not to MIDI CC. This matches the desktop Osirus
+         * plugin's Controller::sendParameterChange() path. */
+        /* Track CC values in shared memory */
+        uint8_t status = msg[0] & 0xF0;
+
+        if (status == 0xB0 && len >= 3) {
+            shm->cc_values[msg[1] & 0x7F] = msg[2] & 0x7F;
+            shm->cc_seen[msg[1] & 0x7F] = 1;
+        }
+        if (status == 0xA0 && len >= 3) {
+            shm->cc_values_b[msg[1] & 0x7F] = msg[2] & 0x7F;
+            shm->cc_seen_b[msg[1] & 0x7F] = 1;
+        }
+
+        int bank = shm->current_bank;
+        int preset = shm->current_preset;
+        const int change_mask = apply_program_selection_midi(msg, len, shm->bank_count, shm->preset_count, &bank, &preset);
+        if (change_mask != PROGRAM_SELECTION_NONE) {
+            shm->current_bank = bank;
+            /* Bound the preset to the bank's ACTUAL count — user banks can hold
+             * fewer than the global preset_count, and an out-of-range index was
+             * silently failing to load (leaving the old sound stuck). */
+            int pc_in_bank = bank_preset_count(shm, bank);
+            if (pc_in_bank > 0 && preset >= pc_in_bank) preset = pc_in_bank - 1;
+            shm->current_preset = preset;
+            shm->cur_bank_preset_count = pc_in_bank;
+            if ((change_mask & PROGRAM_SELECTION_BANK_CHANGED) != 0) {
+                if (bank < shm->rom_bank_count)
+                    snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "Bank %c", 'A' + bank);
+                else if (bank - shm->rom_bank_count < shm->user_bank_count)
+                    snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "%s", shm->user_banks[bank - shm->rom_bank_count].name);
+                else
+                    snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "Bank %d", bank + 1);
+            }
+        }
+
+        const bool is_bank_select = (status == 0xB0 && len >= 3 && (msg[1] == 0 || msg[1] == 32));
+        const bool is_program_change = (status == 0xC0 && len >= 2);
+
+        if (is_program_change) {
+            /* Load from the same source we use for the browser cache so names
+             * and audible patch content stay in lockstep. */
+            virusLib::ROMFile::TPreset single{};
+            bool loaded = child_get_single_preset(mc, rom, shm->current_bank, shm->current_preset, &single);
+            if (!loaded && shm->current_preset != 0) {
+                /* Don't silently leave the old patch stuck: fall back to preset
+                 * 0 of this bank so a Program Change always lands somewhere. */
+                vlog("[child] preset %d not found in bank %d (count %d); falling back to 0",
+                     shm->current_preset, shm->current_bank, shm->cur_bank_preset_count);
+                shm->current_preset = 0;
+                loaded = child_get_single_preset(mc, rom, shm->current_bank, 0, &single);
+            }
+            if (loaded) {
+                mc->writeSingle(virusLib::BankNumber::EditBuffer, virusLib::SINGLE, single);
+                child_sync_params_from_preset(shm, single);
+                for (int i = 0; i < 512; i++) shm->current_single[i] = single[i];
+                __sync_synchronize();   /* publish the 512 bytes before the valid flag */
+                shm->current_single_valid = 1;
+            } else {
+                vlog("[child] WARNING: program change could not load bank %d preset %d",
+                     shm->current_bank, shm->current_preset);
+            }
+            child_update_preset_name(shm, mc, rom);
+            /* Confirm the preset-load sync so a remote-UI state re-read can
+             * block until cc_values reflect the new patch (see get_param). */
+            __sync_synchronize();
+            shm->preset_done_gen = shm->preset_req_gen;
+            processed++;
+            continue;
+        }
+
+        if (is_bank_select) {
+            /* Bank select is pending until Program Change commit. */
+            if ((change_mask & PROGRAM_SELECTION_BANK_CHANGED) != 0)
+                child_update_preset_name(shm, mc, rom);
+            processed++;
+            continue;
+        }
+
+        child_send_midi(mc, msg, len);
+
+        if ((change_mask & (PROGRAM_SELECTION_BANK_CHANGED | PROGRAM_SELECTION_PRESET_CHANGED)) != 0) {
+            child_update_preset_name(shm, mc, rom);
+        }
+
+        processed++;
+    }
+}
+
+static int child_detect_valid_bank_count(virusLib::Microcontroller *mc,
+                                         virusLib::ROMFile *rom,
+                                         int fallback_bank_count) {
+    if (!rom) return fallback_bank_count > 0 ? fallback_bank_count : 1;
+
+    int preset_count = rom->getPresetsPerBank();
+    if (preset_count <= 0) preset_count = VIRUS_MAX_PRESETS_PER_BANK;
+    if (preset_count > VIRUS_MAX_PRESETS_PER_BANK) preset_count = VIRUS_MAX_PRESETS_PER_BANK;
+
+    int detected = 0;
+    virusLib::ROMFile::TPreset pd{};
+    for (int bank = 0; bank < VIRUS_MAX_BANKS; ++bank) {
+        if (!child_get_single_preset(mc, rom, bank, 0, &pd)) break;
+
+        if (child_use_mc_preset_map(rom)) {
+            if (!child_validate_virus_a_bank(mc, rom, bank, preset_count)) break;
+        }
+
+        detected++;
+    }
+
+    if (detected > 0) return detected;
+    return fallback_bank_count > 0 ? fallback_bank_count : 1;
+}
+
+static void child_build_preset_name_cache(virus_shm_t *shm,
+                                          virusLib::Microcontroller *mc,
+                                          virusLib::ROMFile *rom) {
+    if (!shm) return;
+    shm->preset_name_cache_ready = 0;
+    memset((void*)shm->preset_name_cache, 0, sizeof(shm->preset_name_cache));
+    if (!rom || !mc) return;
+
+    int bank_count = shm->bank_count;
+    if (bank_count < 0) bank_count = 0;
+    if (bank_count > VIRUS_MAX_BANKS) bank_count = VIRUS_MAX_BANKS;
+    int preset_count = shm->preset_count;
+    if (preset_count < 0) preset_count = 0;
+    if (preset_count > VIRUS_MAX_PRESETS_PER_BANK) preset_count = VIRUS_MAX_PRESETS_PER_BANK;
+
+    virusLib::ROMFile::TPreset pd{};
+    for (int bank = 0; bank < bank_count; ++bank) {
+        for (int preset = 0; preset < preset_count; ++preset) {
+            if (!child_get_single_preset(mc, rom, bank, preset, &pd)) continue;
+            const std::string name = virusLib::ROMFile::getSingleName(pd);
+            snprintf(shm->preset_name_cache[bank][preset],
+                     sizeof(shm->preset_name_cache[bank][preset]),
+                     "%s",
+                     name.empty() ? "---" : name.c_str());
+        }
+    }
+
+    shm->preset_name_cache_ready = 1;
+}
+
+static void child_update_preset_name(virus_shm_t *shm,
+                                     virusLib::Microcontroller *mc,
+                                     virusLib::ROMFile *rom) {
+    const char *cached = shm_lookup_preset_name(shm, shm->current_bank, shm->current_preset);
+    if (cached) {
+        snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "%s", cached);
+        return;
+    }
+
+    virusLib::ROMFile::TPreset pd{};
+    if (child_get_single_preset(mc, rom, shm->current_bank, shm->current_preset, &pd))
+        snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "%s",
+                 virusLib::ROMFile::getSingleName(pd).c_str());
+    else
+        snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "---");
+}
+
+/* Load user preset banks from .mid SysEx dump files in banks/ directory. */
+static int child_load_user_banks(const char *banks_dir) {
+    t_shm->user_bank_count = 0;
+
+    DIR *dir = opendir(banks_dir);
+    if (!dir) {
+        vlog("[child] no banks/ directory at %s", banks_dir);
+        return 0;
+    }
+
+    std::vector<std::string> mid_files;
+    struct dirent *ent;
+    while ((ent = readdir(dir)) != nullptr) {
+        const char *name = ent->d_name;
+        size_t len = strlen(name);
+        if (len < 5) continue;
+        if (strcasecmp(name + len - 4, ".mid") != 0) continue;
+        mid_files.push_back(std::string(banks_dir) + "/" + name);
+    }
+    closedir(dir);
+
+    std::sort(mid_files.begin(), mid_files.end());
+
+    for (const auto &path : mid_files) {
+        if (t_shm->user_bank_count >= VIRUS_MAX_USER_BANKS) break;
+
+        /* Extract individual SysEx messages from .mid file.
+         * Each is a DUMP_SINGLE: F0 00 20 33 01 <dev> 10 <bank> <prog> <256 bytes> <chk> F7
+         * Total 267 bytes per message, preset data at offset 9. */
+        synthLib::SysexBufferList sysex_msgs;
+        if (!synthLib::MidiToSysex::extractSysexFromFile(sysex_msgs, path)) {
+            vlog("[child] failed to extract sysex from: %s", path.c_str());
+            continue;
+        }
+
+        user_bank_t *ub = &t_shm->user_banks[t_shm->user_bank_count];
+        memset(ub, 0, sizeof(user_bank_t));
+        ub->preset_count = 0;
+
+        for (const auto &msg : sysex_msgs) {
+            if (ub->preset_count >= VIRUS_MAX_PRESETS_PER_BANK) break;
+            /* Validate: must be DUMP_SINGLE (cmd 0x10) and have 256 bytes of preset data */
+            if (msg.size() < 267) continue;
+            if (msg[0] != 0xF0 || msg[6] != 0x10) continue;
+
+            memcpy(ub->presets[ub->preset_count].data(), &msg[9], 256);
+            ub->preset_count++;
+        }
+
+        if (ub->preset_count == 0) {
+            vlog("[child] no valid presets in: %s", path.c_str());
+            continue;
+        }
+
+        const char *fname = strrchr(path.c_str(), '/');
+        fname = fname ? fname + 1 : path.c_str();
+        size_t name_len = strlen(fname);
+        if (name_len > 4) name_len -= 4;
+        if (name_len > sizeof(ub->name) - 1) name_len = sizeof(ub->name) - 1;
+        memcpy(ub->name, fname, name_len);
+        ub->name[name_len] = '\0';
+
+        vlog("[child] loaded user bank '%s': %d presets from %s",
+             ub->name, ub->preset_count, path.c_str());
+        t_shm->user_bank_count++;
+    }
+
+    vlog("[child] loaded %d user bank(s)", t_shm->user_bank_count);
+    return t_shm->user_bank_count;
+}
+
+/*
+ * Scheduling. The emulator runs inside MPC's own process, so never touch threads that are not ours (the Move module
+ * raised every thread of its forked child to SCHED_FIFO). A new Linux thread inherits its creator's nice value, so
+ * lowering it on the emulator thread before gearmulator starts the DSP thread covers both. OSIRUS_NICE overrides (0 = leave).
+ */
+#define VIRUS_EMU_NICE (-5)
+
+static void tune_emu_thread(void) {
+    int nice_val = VIRUS_EMU_NICE;
+    if (const char *e = getenv("OSIRUS_NICE")) nice_val = atoi(e);
+    if (nice_val == 0) return;
+    const pid_t tid = (pid_t)syscall(SYS_gettid);
+    const int rc = setpriority(PRIO_PROCESS, (id_t)tid, nice_val);
+    vlog("[emu] nice %d on tid %d rc=%d%s%s", nice_val, (int)tid, rc, rc ? " " : "", rc ? strerror(errno) : "");
+}
+
+static void child_main_impl(virus_shm_t *shm) {
+    t_shm = shm;
+    tune_emu_thread();
+
+
+    vlog("[child] started");
+
+    /* 1. Load ROM */
+    snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Loading ROM...");
+    char roms_dir[512];
+    snprintf(roms_dir, sizeof(roms_dir), "%s/roms", shm->module_dir);
+    auto roms = virusLib::ROMLoader::findROMs(std::string(roms_dir));
+    if (roms.empty()) {
+        snprintf((char*)shm->load_error, sizeof(shm->load_error),
+                 "No Virus ROM found in roms/ directory.");
+        shm->initialized = 1; shm->loading_complete = 1;
+        vlog("[child] no ROM found, exiting");
+        return;
+    }
+
+    /* Sort ROMs by model (A=0, B=1, C=2, ...) so enum goes A → B → C */
+    std::sort(roms.begin(), roms.end(), [](const virusLib::ROMFile &a, const virusLib::ROMFile &b) {
+        return static_cast<int>(a.getModel()) < static_cast<int>(b.getModel());
+    });
+
+    /* Enumerate all ROMs for the UI */
+    shm->rom_count = (int)roms.size();
+    if (shm->rom_count > 8) shm->rom_count = 8;
+    for (int i = 0; i < shm->rom_count; i++) {
+        virusLib::ROMFile tmp{roms[i]};
+        snprintf(shm->rom_names[i], sizeof(shm->rom_names[i]), "Virus %s",
+                 tmp.getModelName().c_str());
+        vlog("[child] ROM[%d]: %s", i, shm->rom_names[i]);
+    }
+
+    /* Pick the selected ROM */
+    int idx = shm->rom_index;
+    if (idx < 0 || idx >= shm->rom_count) idx = 0;
+    virusLib::ROMFile *rom = new virusLib::ROMFile(std::move(roms[idx]));
+    vlog("[child] ROM loaded: %s model=%s (index %d/%d)",
+         rom->getFilename().c_str(), rom->getModelName().c_str(), idx, shm->rom_count);
+
+    /* 2. Create DSP instances */
+    snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Creating DSP...");
+    vlog("[child] creating DspSingle...");
+    virusLib::DspSingle *dsp1 = nullptr;
+    virusLib::DspSingle *dsp2 = nullptr;
+    try {
+        virusLib::Device::createDspInstances(dsp1, dsp2, *rom, DEVICE_RATE);
+    } catch (const std::exception& e) {
+        snprintf((char*)shm->load_error, sizeof(shm->load_error), "DSP creation failed: %s", e.what());
+        shm->initialized = 1; shm->loading_complete = 1;
+        vlog("[child] DSP creation failed: %s", e.what());
+        delete rom;
+        return;
+    }
+    vlog("[child] createDspInstances OK");
+
+    /* 3. Create Microcontroller */
+    vlog("[child] creating Microcontroller...");
+    virusLib::Microcontroller *mc = new virusLib::Microcontroller(*dsp1, *rom, false);
+
+    /* 4. Set up semaphore and audio callback */
+    dsp56k::SpscSemaphore audio_sem(1);
+    std::atomic<int32_t> notify_timeout{0};
+    std::atomic<uint32_t> callback_count{0};
+    std::atomic<bool> sem_active{false};
+
+    auto& audio = dsp1->getAudio();
+    audio.setCallback([&](dsp56k::Audio* a) {
+        mc->getMidiQueue(0).onAudioWritten();
+        uint32_t count = callback_count.fetch_add(1) + 1;
+        if ((count & 0x3) == 0) {
+            std::vector<synthLib::SMidiEvent> midiOut;
+            mc->readMidiOut(midiOut);
+            mc->process();
+        }
+        if (sem_active.load(std::memory_order_relaxed)) {
+            const auto avail = a->getAudioOutputs().size();
+            int32_t timeout = notify_timeout.load();
+            timeout--;
+            if (timeout <= 0 && avail >= (EMU_CHUNK - 4)) {
+                timeout = (EMU_CHUNK - 4);
+                audio_sem.notify();
+            }
+            notify_timeout.store(timeout);
+        }
+    }, 0);
+
+    /* 5. Boot DSPs */
+    snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Booting DSP...");
+    vlog("[child] bootDSPs...");
+    virusLib::Device::bootDSPs(dsp1, dsp2, *rom, false);
+    vlog("[child] bootDSPs OK");
+
+    /* 6. Boot drain */
+    {
+        constexpr int BOOT_CHUNK = 8;
+        float dummy_l[BOOT_CHUNK], dummy_r[BOOT_CHUNK];
+        synthLib::TAudioInputs inputs = {};
+        synthLib::TAudioOutputs outputs = {};
+        outputs[0] = dummy_l; outputs[1] = dummy_r;
+
+        int retries = 0;
+        if (rom->getModel() == virusLib::DeviceModel::A) {
+            for (int i = 0; i < 32; i++)
+                dsp1->processAudio(inputs, outputs, BOOT_CHUNK, 0);
+            dsp1->disableESSI1();
+            retries = 32;
+        } else {
+            while (!mc->dspHasBooted() && retries < 512) {
+                if (shm->child_shutdown) goto cleanup;
+                dsp1->processAudio(inputs, outputs, BOOT_CHUNK, 0);
+                retries++;
+            }
+        }
+        vlog("[child] boot drain: %d cycles (%d frames)", retries, retries * BOOT_CHUNK);
+
+        /* 7. Initialize */
+        mc->sendInitControlCommands(127);
+        for (int i = 0; i < 8; i++)
+            dsp1->processAudio(inputs, outputs, BOOT_CHUNK, 0);
+        mc->createDefaultState();
+        for (int i = 0; i < 8; i++)
+            dsp1->processAudio(inputs, outputs, BOOT_CHUNK, 0);
+
+        /* Enable Page B parameter control via MIDI polypressure.
+         * sendInitControlCommands disables this by default; we need it
+         * for full parameter access. Incoming pad polypressure is
+         * converted to channel pressure in v2_on_midi to prevent
+         * aftertouch from corrupting Page B parameters. */
+        mc->sendControlCommand(virusLib::MIDI_CONTROL_HIGH_PAGE, 0x1);
+    }
+    vlog("[child] DSP initialized");
+
+    /* 7b. Apply DSP clock scaling.
+     * Virus A (72 MHz) runs fine at 100%. Virus B/C (108 MHz) need reduction
+     * to fit Move's A72 CPU budget. User can override via dsp_clock param. */
+    {
+        int pct = shm->dsp_clock_percent;
+        if (pct <= 0) {
+            switch (rom->getModel()) {
+                /* 100% for every model: a Move's Cortex-A72 needed B at 45% and C at 35%, but on an MPC Live III (RK3588) C at 35%
+                 * sounded distorted (the emulated DSP is starved of cycles) while 100% costs ~57% of one fast core. */
+                case virusLib::DeviceModel::A: pct = 100; break;
+                default:                       pct = 100; break;
+            }
+        }
+        dsp1->getEsxiClock().setSpeedPercent(pct);
+        shm->dsp_clock_applied = pct;
+        vlog("[child] DSP clock set to %d%% for model %s", pct, rom->getModelName().c_str());
+    }
+    strncpy((char*)shm->rom_model_name, rom->getModelName().c_str(), sizeof(shm->rom_model_name) - 1);
+
+    /* 8. Set up presets */
+    shm->bank_count = child_detect_valid_bank_count(
+        mc, rom, (int)virusLib::ROMFile::getRomBankCount(rom->getModel()));
+    shm->rom_bank_count = shm->bank_count;
+    shm->preset_count = rom->getPresetsPerBank();
+    shm->cur_bank_preset_count = shm->preset_count;  /* updated per bank on change */
+
+    /* 8b. Load user preset banks from banks/ directory */
+    {
+        char banks_dir[512];
+        snprintf(banks_dir, sizeof(banks_dir), "%s/banks", shm->module_dir);
+        child_load_user_banks(banks_dir);
+        if (shm->user_bank_count > 0) {
+            shm->bank_count = shm->rom_bank_count + shm->user_bank_count;
+            vlog("[child] total banks: %d ROM + %d user = %d",
+                 shm->rom_bank_count, shm->user_bank_count, shm->bank_count);
+        }
+    }
+
+    {   /* start on the bank/preset the host asked for while booting, when the ROM has it */
+        int bb = shm->boot_bank, bp = shm->boot_preset;
+        if (bb < 0 || bb >= shm->bank_count) { bb = 0; bp = 0; }
+        if (bp < 0 || bp >= shm->preset_count) bp = 0;
+        shm->current_bank = bb;
+        shm->current_preset = bp;
+        if (bb < shm->rom_bank_count)
+            snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "Bank %c", 'A' + bb);
+        else
+            snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "%s", shm->user_banks[bb - shm->rom_bank_count].name);
+    }
+    child_build_preset_name_cache(shm, mc, rom);
+    child_update_preset_name(shm, mc, rom);
+
+    { /* Initial preset — use writeSingle for all models so the EditBuffer
+       * is reliably populated before the emu loop starts producing audio. */
+        virusLib::ROMFile::TPreset single{};
+        if (child_get_single_preset(mc, rom, shm->current_bank, shm->current_preset, &single)) {
+            mc->writeSingle(virusLib::BankNumber::EditBuffer, virusLib::SINGLE, single);
+            child_sync_params_from_preset(shm, single);
+        }
+    }
+
+    /* 9. Pre-fill ring buffer */
+    snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Warming up...");
+    {
+        float wl[EMU_CHUNK], wr_buf[EMU_CHUNK];
+        synthLib::TAudioInputs inputs = {};
+        synthLib::TAudioOutputs outputs = {};
+        outputs[0] = wl; outputs[1] = wr_buf;
+
+        for (int fill = 0; fill < 64 && shm_ring_free(shm) >= EMU_CHUNK; fill++) {
+            dsp1->processAudio(inputs, outputs, EMU_CHUNK, 0);
+            int wr = shm->ring_write;
+            for (int i = 0; i < EMU_CHUNK; i++) {
+                int32_t l = (int32_t)(wl[i] * 32767.0f);
+                int32_t r = (int32_t)(wr_buf[i] * 32767.0f);
+                if (l > 32767) l = 32767; if (l < -32768) l = -32768;
+                if (r > 32767) r = 32767; if (r < -32768) r = -32768;
+                shm->audio_ring[wr * 2 + 0] = (int16_t)l;
+                shm->audio_ring[wr * 2 + 1] = (int16_t)r;
+                wr = (wr + 1) % AUDIO_RING_SIZE;
+            }
+            shm->ring_write = wr;
+        }
+    }
+    vlog("[child] pre-filled %d frames", shm_ring_available(shm));
+
+    /* 10. Signal ready and enter emu loop */
+    shm->initialized = 1;
+    shm->loading_complete = 1;
+    __sync_synchronize();   /* publish prefilled ring + init before child_ready (acquire on the parent) */
+    shm->child_ready = 1;
+    sem_active.store(true);
+    notify_timeout.store(0);
+    snprintf((char*)shm->loading_status, sizeof(shm->loading_status),
+             "Ready: %d banks, %d presets/bank", shm->bank_count, shm->preset_count);
+    memset((void*)shm->pending_params, 0, sizeof(shm->pending_params));
+    vlog("[child] READY! entering emu loop");
+
+    /* === Emu loop (runs until shutdown) === */
+    {
+        shm->prof_start_us = now_us();
+        float proc_l[EMU_CHUNK], proc_r[EMU_CHUNK];
+        resamp_state_t rs; memset(&rs, 0, sizeof(rs));
+
+        while (!shm->child_shutdown) {
+            /* Process incoming MIDI from parent */
+            child_process_midi_fifo(shm, mc, rom);
+            child_drain_pending_params(shm, mc);
+            /* Self-contained single dump/inject (after drain so a dump reflects
+             * the latest param edits in the EditBuffer). */
+            child_handle_single_io(shm, mc, rom);
+
+            /* Throttle: don't let ring fill beyond target (keeps latency low) */
+            if (shm_ring_available(shm) >= RING_TARGET_FILL) {
+                usleep(500);
+                continue;
+            }
+
+            /* Wait for DSP to produce enough frames */
+            audio_sem.wait();
+            if (shm->child_shutdown) break;
+
+            synthLib::TAudioInputs inputs = {};
+            synthLib::TAudioOutputs outputs = {};
+            outputs[0] = proc_l; outputs[1] = proc_r;
+
+            int64_t t0 = now_us();
+            dsp1->processAudio(inputs, outputs, EMU_CHUNK, EMU_CHUNK);
+            int64_t dt = now_us() - t0;
+            shm->prof_process_us_total += dt;
+            if ((int)dt > shm->prof_process_max_us) shm->prof_process_max_us = (int)dt;
+            shm->emu_blocks++;
+            shm->child_alive++;
+
+            /* Peak tracking */
+            for (int i = 0; i < EMU_CHUNK; i++) {
+                float peak = fabsf(proc_l[i]);
+                float pr = fabsf(proc_r[i]);
+                if (pr > peak) peak = pr;
+                if (peak > shm->prof_peak_level) shm->prof_peak_level = peak;
+            }
+
+            /* Check for dynamic clock change */
+            {
+                int want = shm->dsp_clock_percent;
+                if (want > 0 && want != shm->dsp_clock_applied) {
+                    dsp1->getEsxiClock().setSpeedPercent(want);
+                    shm->dsp_clock_applied = want;
+                    vlog("[child] DSP clock changed to %d%%", want);
+                }
+            }
+
+            /* DSP thread CPU, ~every 2 s */
+            if ((shm->emu_blocks % 1465) == 1) {
+                static thread_local long last_ticks = 0;
+                static thread_local int64_t last_us = 0;
+                const long tk = dsp_thread_ticks();
+                const int64_t nw = now_us();
+                if (last_us && nw > last_us) shm->dsp_cpu_pct = (int)((tk - last_ticks) * 1000000LL / (nw - last_us));   /* ticks are 1/100 s */
+                last_ticks = tk;
+                last_us = nw;
+            }
+            /* Periodic stats */
+            if ((shm->emu_blocks % 1465) == 1) {
+                int64_t now = now_us();
+                double elapsed_s = (now - shm->prof_start_us) / 1000000.0;
+                double mips = 0;
+                if (elapsed_s > 0.1)
+                    mips = (double)shm->emu_blocks * EMU_CHUNK * 2304.0 / elapsed_s / 1000000.0;
+                vlog("[child] blk=%d buf=%d ur=%d mips=%.1f peak=%.3f",
+                     shm->emu_blocks, shm_ring_available(shm), shm->underrun_count, mips,
+                     (double)shm->prof_peak_level);
+                shm->prof_peak_level = 0.0f;
+            }
+
+            /* Resample 46875→44100 (4-point cubic) */
+            float gain = (shm->gain_percent > 0) ? (shm->gain_percent / 100.0f) : OUTPUT_GAIN;
+            int16_t resampled[RESAMPLE_MAX_OUT * 2];
+            int out_count = resample_block(&rs, proc_l, proc_r, EMU_CHUNK, gain,
+                                           resampled, RESAMPLE_MAX_OUT);
+
+            /* Write to shared ring buffer */
+            if (shm_ring_free(shm) < out_count) continue;
+            int wr = shm->ring_write;
+            for (int i = 0; i < out_count; i++) {
+                shm->audio_ring[wr * 2 + 0] = resampled[i * 2 + 0];
+                shm->audio_ring[wr * 2 + 1] = resampled[i * 2 + 1];
+                wr = (wr + 1) % AUDIO_RING_SIZE;
+            }
+            __sync_synchronize();   /* publish samples before the index (ARM weak ordering) */
+            shm->ring_write = wr;
+        }
+    }
+
+cleanup:
+    vlog("[child] shutting down");
+    audio.setCallback(nullptr, 0);
+    audio.terminate();
+    delete mc;
+    delete dsp1;
+    delete rom;
+    vlog("[child] exiting");
+}
+
+static void child_main(virus_shm_t *shm) {
+    child_main_impl(shm);
+    __sync_synchronize();
+    shm->emu_exited = 1;
+}
+
+static void *emu_thread_entry(void *arg) {
+    child_main((virus_shm_t *)arg);
+    return nullptr;
+}
+
+/* =====================================================================
+ * Boot / restart helpers (parent process)
+ * ===================================================================== */
+
+/* Join the emulator thread (it exits once child_shutdown is set). */
+static void join_emu_thread(virus_instance_t *inst) {
+    if (!inst->emu_thread_joinable) return;
+    inst->shm->child_shutdown = 1;
+    pthread_join(inst->emu_thread, nullptr);
+    inst->emu_thread_joinable = 0;
+}
+
+/* Start the emulator thread and wait for it to be ready. Returns 0 on success. */
+static int start_emu_and_wait(virus_instance_t *inst) {
+    virus_shm_t *shm = inst->shm;
+
+    vlog("start_emu: starting emulator thread...");
+    if (pthread_create(&inst->emu_thread, nullptr, emu_thread_entry, shm) != 0) {
+        snprintf((char*)shm->load_error, sizeof(shm->load_error), "could not start the emulator thread: %s", strerror(errno));
+        shm->initialized = 1; shm->loading_complete = 1;
+        return -1;
+    }
+    inst->emu_thread_joinable = 1;
+
+    for (int i = 0; i < 1200 && !shm->child_ready && !shm->emu_exited && !inst->destroying; i++)
+        usleep(50000);
+
+    if (shm->child_ready) {
+        vlog("start_emu: ready");
+        return 0;
+    }
+    if (inst->destroying) {
+        vlog("start_emu: instance destroying, abandoning boot");
+        return -1;
+    }
+    if (!shm->emu_exited)
+        snprintf((char*)shm->load_error, sizeof(shm->load_error), "DSP boot timed out (60s)");
+    shm->initialized = 1; shm->loading_complete = 1;
+    return -1;
+}
+
+/* Kill existing child and reset shm state for a fresh boot.
+ * Preserves: module_dir, rom_index, dsp_clock_percent, gain_percent */
+static void kill_child_and_reset(virus_instance_t *inst) {
+    virus_shm_t *shm = inst->shm;
+    join_emu_thread(inst);
+
+    /* Reset transient state but keep config */
+    shm->ring_read = 0;
+    shm->ring_write = 0;
+    shm->midi_read = 0;
+    shm->midi_write = 0;
+    shm->child_ready = 0;
+    shm->child_shutdown = 0;
+    shm->child_alive = 0;
+    shm->emu_exited = 0;
+    shm->initialized = 0;
+    shm->loading_complete = 0;
+    shm->load_error[0] = '\0';
+    shm->underrun_count = 0;
+    shm->emu_blocks = 0;
+    shm->render_count = 0;
+    shm->prof_process_us_total = 0;
+    shm->prof_process_max_us = 0;
+    shm->prof_peak_level = 0.0f;
+    shm->prof_ring_min = 0;
+    shm->dsp_clock_applied = 0;
+    /* A4: drop the previous child's single. It belonged to the OLD ROM/child; leaving
+     * it valid lets a get_state in the restart window serialize stale bytes under the
+     * new rom_index and clobber a good slot file (not caught by the empty-state guard).
+     * pending_state replay re-establishes valid=1 with the new child's single. */
+    shm->current_single_valid = 0;
+    inst->params_user_dirty = 0;   /* R1: restart window is protected by the empty bail again */
+}
+
+static void* boot_thread_func(void *arg) {
+    virus_instance_t *inst = (virus_instance_t*)arg;
+    virus_shm_t *shm = inst->shm;
+
+    snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Starting...");
+    if (!inst->destroying)
+        start_emu_and_wait(inst);
+
+    vlog("boot thread: boot complete");
+    inst->boot_thread_running = 0;
+    return nullptr;
+}
+
+/* Restart thread: stops the emulator thread and boots a new one with different ROM */
+static void* restart_thread_func(void *arg) {
+    virus_instance_t *inst = (virus_instance_t*)arg;
+    virus_shm_t *shm = inst->shm;
+
+    vlog("restart thread: killing child for ROM switch...");
+    snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Switching ROM...");
+
+    kill_child_and_reset(inst);
+
+    if (!inst->destroying)
+        start_emu_and_wait(inst);
+
+    vlog("restart thread: restart complete");
+    inst->boot_thread_running = 0;
+    return nullptr;
+}
+
+/* Start a boot/restart worker on inst->boot_thread. Callers only start one
+ * while boot_thread_running == 0, i.e. the previous worker has finished its
+ * work and is at most returning, so the join here is immediate. Returns 0 on
+ * success. */
+static int start_boot_worker(virus_instance_t *inst, void *(*fn)(void *)) {
+    if (inst->boot_thread_joinable) {
+        pthread_join(inst->boot_thread, nullptr);
+        inst->boot_thread_joinable = 0;
+    }
+    inst->boot_thread_running = 1;
+    if (pthread_create(&inst->boot_thread, nullptr, fn, inst) != 0) {
+        inst->boot_thread_running = 0;
+        return -1;
+    }
+    inst->boot_thread_joinable = 1;
+    return 0;
+}
+
+/* =====================================================================
+ * Plugin API v2
+ * ===================================================================== */
+
+static void* v2_create_instance(const char *module_dir, const char *json_defaults) {
+    (void)json_defaults;
+
+    virus_instance_t *inst = (virus_instance_t*)calloc(1, sizeof(virus_instance_t));
+    if (!inst) return nullptr;
+
+    inst->shm = (virus_shm_t*)calloc(1, sizeof(virus_shm_t));
+    if (!inst->shm) {
+        free(inst);
+        return nullptr;
+    }
+    strncpy((char*)inst->shm->module_dir, module_dir, sizeof(inst->shm->module_dir) - 1);
+    for (int i = 0; i < 128; i++) inst->held_note[i] = -1;  /* no notes held yet */
+
+    /* Set default CC values (Virus Page A indices) */
+    inst->shm->cc_values[40] = 127;  /* Cutoff */
+    inst->shm->cc_values[42] = 0;    /* Resonance */
+    inst->shm->cc_values[91] = 100;  /* Patch Volume */
+
+    vlog("create_instance from %s", module_dir);
+    snprintf((char*)inst->shm->loading_status, sizeof(inst->shm->loading_status), "Initializing...");
+
+    start_boot_worker(inst, boot_thread_func);
+    return inst;
+}
+
+static void v2_destroy_instance(void *instance) {
+    virus_instance_t *inst = (virus_instance_t*)instance;
+    if (!inst) return;
+    vlog("destroying");
+
+    /* Signal child to shutdown, and any boot/restart worker to bail out */
+    inst->destroying = 1;
+    if (inst->shm) inst->shm->child_shutdown = 1;
+
+    /* Join the boot/restart worker -- whether or not it still reports
+     * running, it must have LEFT this library before we return and the host
+     * dlclose()s us. */
+    if (inst->boot_thread_joinable) {
+        pthread_join(inst->boot_thread, nullptr);
+        inst->boot_thread_joinable = 0;
+    }
+
+    /* Stop the emulator thread; it must be gone before the host dlclose()s us */
+    join_emu_thread(inst);
+
+    free(inst->shm);
+
+    if (inst->pending_state) free(inst->pending_state);
+    free(inst);
+    vlog("destroyed");
+}
+
+static void v2_on_midi(void *instance, const uint8_t *msg, int len, int source) {
+    virus_instance_t *inst = (virus_instance_t*)instance;
+    if (!inst || !inst->shm || !inst->shm->initialized || len < 1) return;
+    (void)source;
+
+    uint8_t modified[8];
+    int n = len > 8 ? 8 : len;
+    memcpy(modified, msg, n);
+
+    uint8_t status = msg[0] & 0xF0;
+
+    /* Log non-note MIDI -- but not the continuous streams. vlog opens and
+     * fflushes a file, and this runs on the SPI callback: Move's pads send
+     * poly aftertouch for as long as a pad is held, which was a line per
+     * value, dozens a second. */
+    if (status != 0x90 && status != 0x80 && status != 0xA0 && status != 0xD0 &&
+        status != 0xE0 && len >= 2)
+        vlog("[midi-in] raw=0x%02X status=0x%02X d1=%d d2=%d len=%d",
+             msg[0], status, msg[1], len > 2 ? msg[2] : 0, len);
+
+    /* Convert polypressure (0xA0) to channel pressure (0xD0).
+     * The Virus uses polypressure exclusively for Page B parameter access
+     * (see manual: "KCB: accessible by MIDI Polyphonic Pressure").
+     * The mod matrix "ChanPres" source only responds to channel pressure.
+     * Since channel pressure is mono, we track per-note pressure and
+     * send the max across all active notes. */
+    if (status == 0xA0 && len >= 3) {
+        uint8_t note = msg[1] & 0x7F;
+        inst->note_pressure[note] = msg[2] & 0x7F;
+        /* Find max pressure across all notes */
+        uint8_t max_p = 0;
+        for (int i = 0; i < 128; i++) {
+            if (inst->note_pressure[i] > max_p)
+                max_p = inst->note_pressure[i];
+        }
+        uint8_t ch = msg[0] & 0x0F;
+        uint8_t cp[2] = { (uint8_t)(0xD0 | ch), max_p };
+        midi_fifo_push(inst->shm, cp, 2);
+        return;
+    }
+
+    /* Clear note pressure on note-off */
+    if (status == 0x80 || (status == 0x90 && len >= 3 && msg[2] == 0)) {
+        uint8_t note = msg[1] & 0x7F;
+        inst->note_pressure[note] = 0;
+    }
+
+    /* Apply octave transpose to notes. A note-off must release the SAME transposed
+     * note the note-on sent — otherwise turning the Octave encoder (or a state restore
+     * that changes octave_transpose) while a key is held would compute a different
+     * note-off and strand the voice. So record the emitted note at note-on and replay
+     * it at note-off, rather than recomputing from the (possibly changed) live offset. */
+    if ((status == 0x90 || status == 0x80) && len >= 2) {
+        uint8_t orig = msg[1] & 0x7F;
+        bool note_off = (status == 0x80) || (status == 0x90 && len >= 3 && msg[2] == 0);
+        int note;
+        if (note_off) {
+            if (inst->held_note[orig] >= 0) {
+                note = inst->held_note[orig];
+                inst->held_note[orig] = -1;
+            } else {
+                note = orig + inst->shm->octave_transpose * 12;
+                if (note < 0) note = 0; if (note > 127) note = 127;
+            }
+        } else {
+            note = orig + inst->shm->octave_transpose * 12;
+            if (note < 0) note = 0; if (note > 127) note = 127;
+            inst->held_note[orig] = (int16_t)note;
+        }
+        modified[1] = (uint8_t)note;
+    }
+
+    /* Track CC values locally too */
+    if (status == 0xB0 && len >= 3) {
+        inst->shm->cc_values[msg[1] & 0x7F] = msg[2] & 0x7F;
+        inst->shm->cc_seen[msg[1] & 0x7F] = 1;
+        if (msg[1] != 0 && msg[1] != 32) inst->params_user_dirty = 1;  /* R1: param-CC edit (not bank select) */
+    }
+
+    if (status == 0xC0 && len >= 2) {
+        clear_param_overrides(inst->shm);
+        inst->params_user_dirty = 0;   /* R1: a preset load supersedes pre-load edits */
+    } else if (status == 0xB0 && len >= 3 && (msg[1] == 0 || msg[1] == 32)) {
+        clear_param_overrides(inst->shm);
+    }
+
+    /* Push to shared MIDI FIFO for child to consume */
+    midi_fifo_push(inst->shm, modified, n);
+}
+
+static int hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* Decode a "key":"<hex>" string field into out[] (up to out_len bytes).
+ * Returns bytes decoded, or -1 if the key is absent. */
+static int json_get_hex(const char *json, const char *key, uint8_t *out, int out_len) {
+    char search[64];
+    /* Match only "key": — NOT "key":" — then skip whitespace before the opening
+     * quote. The host round-trips slot state through a JSON pretty-printer that emits
+     * a space after the colon ("single": "..."), so a hard-coded "key":" never matched
+     * and the embedded single was silently dropped, forcing the fragile reference
+     * recall (wrong/weird sound after a set reload). json_get_int already tolerates
+     * this whitespace; json_get_hex now matches. */
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *p = strstr(json, search);
+    if (!p) return -1;
+    p += strlen(search);
+    while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
+    if (*p != '"') return -1;
+    p++;
+    int n = 0;
+    while (n < out_len && p[0] && p[0] != '"' && p[1] && p[1] != '"') {
+        int hi = hex_nibble(p[0]), lo = hex_nibble(p[1]);
+        if (hi < 0 || lo < 0) break;
+        out[n++] = (uint8_t)((hi << 4) | lo);
+        p += 2;
+    }
+    return n;
+}
+
+static int json_get_int(const char *json, const char *key, int *out) {
+    char search[64];
+    snprintf(search, sizeof(search), "\"%s\":", key);
+    const char *pos = strstr(json, search);
+    if (!pos) return -1;
+    pos += strlen(search);
+    while (*pos == ' ') pos++;
+    *out = atoi(pos);
+    return 0;
+}
+
+/* Copy src into dst with minimal JSON-string escaping (" and \) so a value
+ * (e.g. a user-bank name) embedded in the state blob can't break the manager's
+ * JSON parse. Always NUL-terminates; truncates safely if it won't fit. */
+static void json_escape_into(char *dst, int cap, const char *src) {
+    int n = 0;
+    for (const char *p = src; *p && n < cap - 2; p++) {
+        if (*p == '"' || *p == '\\') dst[n++] = '\\';
+        dst[n++] = *p;
+    }
+    dst[n] = 0;
+}
+
+/* Bug #15: a saved DSP-clock value is only meaningful for the model it was
+ * captured on. A stale low clock (e.g. Virus B's 45) restored onto a Virus A
+ * (whose safe minimum is 100) starves A's emulated DSP -> underruns/dropouts.
+ * This applies a restored clock to shm->dsp_clock_percent ONLY if it is at or
+ * above the loaded model's safe floor; otherwise it resets to auto (0) so the
+ * child re-derives the correct per-model default. rom_model_name is populated
+ * by the child before it signals child_ready, so it is valid here (including on
+ * the post-ROM-switch state replay from v2_render_block). A clamps to [100,100]
+ * (i.e. always auto unless exactly 100); B/C honor any value >= their default. */
+static void apply_restored_dsp_clock(virus_shm_t *shm, int restored) {
+    if (restored < 10) restored = 10;
+    if (restored > 100) restored = 100;
+    int floor_pct;
+    switch (shm->rom_model_name[0]) {
+        case 'A': floor_pct = 100; break;  /* Virus A: only 100 is safe */
+        case 'B': floor_pct = 45;  break;
+        default:  floor_pct = 35;  break;  /* C and others */
+    }
+    if (restored < floor_pct) {
+        vlog("[parent] restored dsp_clock %d below model %s floor %d -> auto",
+             restored, (const char*)shm->rom_model_name, floor_pct);
+        shm->dsp_clock_percent = 0;  /* auto: child picks model default */
+    } else {
+        shm->dsp_clock_percent = restored;
+    }
+}
+
+/* BANKS page list tiles: bank_slot_1..BANK_SLOTS (a tap picks the bank), patch_slot_1..PATCH_SLOTS (a tap picks that preset of the
+ * current bank's page), patch_page_prev/next, patch_page_text. A tile's text is get_param(key), its lit state get_param(key + "_on"). */
+#define BANK_SLOTS 16
+#define PATCH_SLOTS 30
+
+/* "<prefix><n>" or "<prefix><n>_on": n (1-based) or 0 when key is not that; *on set for the "_on" form */
+static int slot_key(const char *key, const char *prefix, int max, int *on) {
+    const size_t pl = strlen(prefix);
+    if (strncmp(key, prefix, pl) != 0) return 0;
+    char *end = nullptr;
+    const long n = strtol(key + pl, &end, 10);
+    if (end == key + pl || n < 1 || n > max) return 0;
+    *on = (strcmp(end, "_on") == 0);
+    return (*on || *end == 0) ? (int)n : 0;
+}
+
+static int patch_pages(virus_shm_t *shm) {
+    const int c = shm->cur_bank_preset_count > 0 ? shm->cur_bank_preset_count : shm->preset_count;
+    return c > 0 ? (c + PATCH_SLOTS - 1) / PATCH_SLOTS : 1;
+}
+
+static void v2_set_param(void *instance, const char *key, const char *val) {
+    virus_instance_t *inst = (virus_instance_t*)instance;
+    if (!inst || !inst->shm) return;
+    virus_shm_t *shm = inst->shm;
+
+    {
+        int on = 0, n;
+        if ((n = slot_key(key, "bank_slot_", BANK_SLOTS, &on)) != 0) {
+            if (!on && atoi(val) != 0) { char b[16]; snprintf(b, sizeof b, "%d", n - 1); v2_set_param(instance, "bank_index", b); }
+            return;
+        }
+        if ((n = slot_key(key, "patch_slot_", PATCH_SLOTS, &on)) != 0) {
+            if (!on && atoi(val) != 0) { char b[16]; snprintf(b, sizeof b, "%d", inst->patch_page * PATCH_SLOTS + n - 1); v2_set_param(instance, "preset", b); }
+            return;
+        }
+        if (strcmp(key, "init_patch") == 0) {   /* the ROM's own " - Init - " single: bank A, preset 126, on A, B and C alike */
+            if (atoi(val) != 0 && shm->child_ready && shm->bank_count > 0 && shm->preset_count > 126) {
+                v2_set_param(instance, "bank_index", "0");
+                v2_set_param(instance, "preset", "126");
+                inst->patch_page = 126 / PATCH_SLOTS;
+            }
+            return;
+        }
+        if (strcmp(key, "patch_page_next") == 0 || strcmp(key, "patch_page_prev") == 0) {
+            if (atoi(val) != 0) {
+                const int d = key[11] == 'n' ? 1 : -1, pg = inst->patch_page + d;
+                if (pg >= 0 && pg < patch_pages(shm)) inst->patch_page = pg;
+            }
+            return;
+        }
+    }
+
+    if (strcmp(key, "state") == 0) {
+        inst->params_user_dirty = 0;   /* R1: a restore supersedes any pre-restore edits */
+        if (!shm->loading_complete || !shm->child_ready) {
+            if (inst->pending_state) free(inst->pending_state);
+            inst->pending_state = strdup(val);
+            inst->pending_state_valid = 1;
+            return;
+        }
+        int ival;
+        int state_version = 1;
+        if (json_get_int(val, "state_version", &ival) == 0)
+            state_version = ival;
+
+        /* Check ROM first: if it's changing, the child will restart which
+         * resets the MIDI FIFO — so bank/preset/CC MIDI would be lost.
+         * Instead, save the full state as pending and let it re-apply
+         * after the new child boots with the correct ROM. */
+        if (json_get_int(val, "rom_index", &ival) == 0) {
+            if (ival >= 0 && (shm->rom_count == 0 || ival < shm->rom_count) && ival != shm->rom_index) {
+                shm->rom_index = ival;
+                /* Bug #15: reset DSP clock to auto so the restarting child
+                 * re-derives the correct per-model default (A=100, B=45, C=35).
+                 * kill_child_and_reset preserves dsp_clock_percent, so without
+                 * this a stale clock (e.g. B's 45) from pending_state would be
+                 * re-applied verbatim onto a Virus-A child -> underruns/dropouts.
+                 * Mirrors the explicit rom_index setter (search "rom_index" below). */
+                shm->dsp_clock_percent = 0;
+                if (inst->pending_state) free(inst->pending_state);
+                inst->pending_state = strdup(val);
+                inst->pending_state_valid = 1;
+                if (shm->child_ready && !inst->boot_thread_running) {
+                    start_boot_worker(inst, restart_thread_func);
+                }
+                return;
+            }
+        }
+
+        /* Self-contained recall: if the saved state embeds the actual single
+         * (Tier 2), write it straight into the EditBuffer and skip the fragile
+         * bank/preset reference + per-param overlay entirely. This survives
+         * bank/preset renumbering and deletion. */
+        {
+            uint8_t single_bytes[512];
+            if (json_get_hex(val, "single", single_bytes, 512) == 512) {
+                /* Keep the browser's bank/preset label roughly in sync (cosmetic;
+                 * the audible patch comes from the embedded single). */
+                if (json_get_int(val, "bank", &ival) == 0 && ival >= 0 && ival < shm->bank_count)
+                    shm->current_bank = ival;
+                if (json_get_int(val, "preset", &ival) == 0 && ival >= 0 && ival < shm->preset_count)
+                    shm->current_preset = ival;
+                for (int i = 0; i < 512; i++) shm->pending_single[i] = single_bytes[i];
+                __sync_synchronize();
+                shm->pending_single_req_gen++;
+                if (json_get_int(val, "octave_transpose", &ival) == 0) {
+                    if (ival < -4) ival = -4; if (ival > 4) ival = 4;
+                    shm->octave_transpose = ival;
+                }
+                if (json_get_int(val, "dsp_clock", &ival) == 0) {
+                    apply_restored_dsp_clock(shm, ival);  /* Bug #15: model-guarded */
+                }
+                if (json_get_int(val, "gain", &ival) == 0) {
+                    if (ival < 1) ival = 1; if (ival > 100) ival = 100;
+                    shm->gain_percent = ival;
+                }
+                /* Bug #14: a self-contained restore injects the saved single into
+                 * the EditBuffer but never issues a Program Change, so current_bank/
+                 * current_preset above name a ROM slot that was NOT actually loaded.
+                 * Force the next preset/bank selection to bypass the "already current"
+                 * no-op guards so the user can switch off this edit-buffer patch. */
+                inst->force_next_preset = 1;
+                inst->force_next_bank = 1;
+                shm_refresh_current_preset_name(shm);
+                return;
+            }
+        }
+
+        bool has_preset = false;
+        int preset_from_state = 0;
+        if (json_get_int(val, "bank", &ival) == 0 && ival >= 0 && ival < shm->bank_count) {
+            shm->current_bank = ival;
+            if (ival < shm->rom_bank_count)
+                snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "Bank %c", 'A' + ival);
+            else if (ival - shm->rom_bank_count < shm->user_bank_count)
+                snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "%s", shm->user_banks[ival - shm->rom_bank_count].name);
+            else
+                snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "Bank %d", ival + 1);
+        }
+        if (json_get_int(val, "preset", &ival) == 0 && ival >= 0 && ival < shm->preset_count) {
+            has_preset = true;
+            preset_from_state = ival;
+        }
+        if (has_preset) {
+            clear_param_overrides(shm);
+            shm->current_preset = preset_from_state;
+            /* Open a preset-sync request before queuing the PC so the child
+             * confirms against this generation once it has loaded the single. */
+            shm->preset_req_gen++;
+            __sync_synchronize();
+            uint8_t cc32[3] = { 0xB0, 32, bank_index_to_midi_lsb(shm->current_bank, shm->bank_count) };
+            midi_fifo_push(shm, cc32, 3);
+            uint8_t pc[2] = { 0xC0, (uint8_t)shm->current_preset };
+            midi_fifo_push(shm, pc, 2);
+        }
+        if (json_get_int(val, "octave_transpose", &ival) == 0) {
+            if (ival < -4) ival = -4; if (ival > 4) ival = 4;
+            shm->octave_transpose = ival;
+        }
+        if (json_get_int(val, "dsp_clock", &ival) == 0) {
+            apply_restored_dsp_clock(shm, ival);  /* Bug #15: model-guarded */
+        }
+        if (json_get_int(val, "gain", &ival) == 0) {
+            if (ival < 1) ival = 1; if (ival > 100) ival = 100;
+            shm->gain_percent = ival;
+        }
+        if (state_version >= VIRUS_STATE_VERSION) {
+            for (int i = 0; i < NUM_PARAMS; i++) {
+                if (json_get_int(val, g_params[i].key, &ival) == 0) {
+                    if (ival < g_params[i].min_val) ival = g_params[i].min_val;
+                    if (ival > g_params[i].max_val) ival = g_params[i].max_val;
+                    send_param_midi(shm, &g_params[i], ival);
+                }
+            }
+        } else {
+            vlog("[parent] legacy state detected; skipping per-parameter restore");
+        }
+        shm_refresh_current_preset_name(shm);
+        return;
+    }
+    if (strcmp(key, "preset") == 0) {
+        int idx = atoi(val);
+        if (!shm->child_ready) {   /* still booting: remember it, the emulator thread starts there */
+            if (idx >= 0 && idx < VIRUS_MAX_PRESETS_PER_BANK) shm->boot_preset = shm->current_preset = idx;
+            return;
+        }
+        /* Bound by the current bank's real count (user banks hold fewer than the
+         * global preset_count); the child also re-bounds + falls back. */
+        int pmax = shm->cur_bank_preset_count > 0 ? shm->cur_bank_preset_count : shm->preset_count;
+        if (idx >= 0 && idx < pmax) {
+            /* Bug #14: skip the "already current" no-op once after a self-contained
+             * restore, whose current_preset names a slot that was never loaded. */
+            if (idx == shm->current_preset && !inst->force_next_preset) {
+                shm_refresh_current_preset_name(shm);
+                return;
+            }
+            inst->force_next_preset = 0;
+            clear_param_overrides(shm);
+            inst->params_user_dirty = 0;   /* R1: this load supersedes pre-load edits */
+            shm->current_preset = idx;
+            shm->preset_req_gen++;
+            __sync_synchronize();
+            uint8_t pc[2] = { 0xC0, (uint8_t)idx };
+            midi_fifo_push(shm, pc, 2);
+            shm_refresh_current_preset_name(shm);
+        }
+        return;
+    }
+    if (strcmp(key, "bank_index") == 0) {
+        int idx = atoi(val);
+        if (!shm->child_ready) {   /* still booting: remember it, the emulator thread starts there */
+            if (idx >= 0 && idx < VIRUS_MAX_BANKS) { shm->boot_bank = shm->current_bank = idx; shm->boot_preset = shm->current_preset = 0; }
+            return;
+        }
+        if (idx >= 0 && idx < shm->bank_count) {
+            /* Bug #14: skip the "already current" no-op once after a self-contained
+             * restore (see force_next_bank), so a bank reselect actually reloads. */
+            if (idx == shm->current_bank && !inst->force_next_bank) {
+                shm_refresh_current_preset_name(shm);
+                return;
+            }
+            inst->force_next_bank = 0;
+            clear_param_overrides(shm);
+            inst->params_user_dirty = 0;   /* R1: this load supersedes pre-load edits */
+            shm->current_bank = idx;
+            shm->current_preset = 0;
+            if (idx < shm->rom_bank_count)
+                snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "Bank %c", 'A' + idx);
+            else if (idx - shm->rom_bank_count < shm->user_bank_count)
+                snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "%s", shm->user_banks[idx - shm->rom_bank_count].name);
+            else
+                snprintf((char*)shm->bank_name, sizeof(shm->bank_name), "Bank %d", idx + 1);
+            shm->preset_req_gen++;
+            __sync_synchronize();
+            uint8_t cc32[3] = { 0xB0, 32, bank_index_to_midi_lsb(idx, shm->bank_count) };
+            midi_fifo_push(shm, cc32, 3);
+            uint8_t pc[2] = { 0xC0, 0 };
+            midi_fifo_push(shm, pc, 2);
+            shm_refresh_current_preset_name(shm);
+        }
+        return;
+    }
+    if (strcmp(key, "octave_transpose") == 0) {
+        int v = atoi(val);
+        if (v < -4) v = -4; if (v > 4) v = 4;
+        shm->octave_transpose = v;
+        return;
+    }
+    if (strcmp(key, "rom_index") == 0) {
+        /* Accept either a numeric index or a ROM name string */
+        int v = -1;
+        for (int i = 0; i < shm->rom_count; i++) {
+            if (strcmp(val, shm->rom_names[i]) == 0) { v = i; break; }
+        }
+        if (v < 0) v = atoi(val);  /* fall back to numeric */
+        if (v < 0) v = 0;
+        if (shm->rom_count > 0 && v >= shm->rom_count) v = shm->rom_count - 1;
+        if (v == shm->rom_index && shm->child_ready) return; /* no change */
+        shm->rom_index = v;
+        /* Reset clock to auto so new ROM gets its appropriate default */
+        shm->dsp_clock_percent = 0;
+        /* Restart child with new ROM (in background thread) */
+        if (!inst->boot_thread_running) {
+            start_boot_worker(inst, restart_thread_func);
+        }
+        return;
+    }
+    if (strcmp(key, "dsp_clock") == 0) {
+        int v = atoi(val);
+        if (v < 10) v = 10; if (v > 100) v = 100;
+        /* Virus A must run at 100% — a sub-100 clock starves A's emulated DSP (underruns),
+         * so pin A here too, mirroring the restore floor in apply_restored_dsp_clock. This
+         * keeps the live setter and restore consistent: you can't set a sub-100 A clock that
+         * would then be silently reset on the next save/restore. (B/C accept their full range
+         * live; restore re-floors them.) */
+        if ((shm->rom_model_name[0] == 'A' || shm->rom_model_name[0] == 'a') && v < 100) v = 100;
+        shm->dsp_clock_percent = v;
+        return;
+    }
+    if (strcmp(key, "gain") == 0) {
+        int v = atoi(val);
+        if (v < 1) v = 1; if (v > 100) v = 100;
+        shm->gain_percent = v;
+        return;
+    }
+    if (strcmp(key, "all_notes_off") == 0) {
+        /* CC123 (All Notes Off) alone respects the sustain pedal and won't cut notes
+         * latched under CC64 or a long release, so a real panic also releases sustain
+         * (CC64=0) and forces All Sound Off (CC120), which ignores sustain/release. */
+        uint8_t sustain_off[3] = { 0xB0, 64, 0 };
+        uint8_t all_sound_off[3] = { 0xB0, 120, 0 };
+        uint8_t all_notes_off[3] = { 0xB0, 123, 0 };
+        midi_fifo_push(shm, sustain_off, 3);
+        midi_fifo_push(shm, all_sound_off, 3);
+        midi_fifo_push(shm, all_notes_off, 3);
+        for (int i = 0; i < 128; i++) inst->held_note[i] = -1;
+        return;
+    }
+    for (int i = 0; i < NUM_PARAMS; i++) {
+        if (strcmp(key, g_params[i].key) == 0) {
+            int ival = atoi(val);
+            if (ival < g_params[i].min_val) ival = g_params[i].min_val;
+            if (ival > g_params[i].max_val) ival = g_params[i].max_val;
+            send_param_midi(shm, &g_params[i], ival);
+            inst->params_user_dirty = 1;   /* R1: a real user edit is now worth serializing */
+            return;
+        }
+    }
+}
+
+static int build_ui_hierarchy(char *buf, int buf_len, const char *model_name) {
+    int off = 0;
+    int model_level = model_name_to_level(model_name);
+
+    #define H_APPEND(...) do { off += snprintf(buf+off, buf_len-off, __VA_ARGS__); } while(0)
+    #define H_PARAM(k, l) H_APPEND("{\"key\":\"%s\",\"label\":\"%s\"},", k, l)
+    #define H_LEVEL(k, l) H_APPEND("{\"level\":\"%s\",\"label\":\"%s\"},", k, l)
+
+    H_APPEND("{\"modes\":null,\"levels\":{");
+
+    /* Root level */
+    H_APPEND("\"root\":{\"list_param\":\"preset\",\"count_param\":\"preset_count\","
+             "\"name_param\":\"preset_name\",\"children\":null,"
+             "\"knobs\":[\"cutoff\",\"filter1_resonance\",\"filter1_env_amt\","
+             "\"flt_attack\",\"flt_decay\",\"flt_sustain\",\"flt_release\",\"octave_transpose\"],"
+             "\"params\":[{\"key\":\"bank_index\",\"label\":\"Bank\"},");
+    H_LEVEL("osc", "Oscillators");
+    H_LEVEL("filter", "Filters");
+    H_LEVEL("flt_env", "Filter Env");
+    H_LEVEL("amp_env", "Amp Env");
+    H_LEVEL("lfo1", "LFO 1");
+    H_LEVEL("lfo2", "LFO 2");
+    H_LEVEL("lfo3", "LFO 3");
+    H_LEVEL("arp", "Arpeggiator");
+    H_LEVEL("fx", "Effects");
+    H_LEVEL("mod", "Mod Matrix");
+    H_LEVEL("perf", "Performance");
+    H_LEVEL("settings", "Settings");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Oscillators */
+    H_APPEND("\"osc\":{\"children\":null,"
+             "\"knobs\":[\"osc1_shape\",\"osc2_shape\",\"osc_balance\",\"osc_mainvolume\"],"
+             "\"params\":[");
+    H_PARAM("osc1_shape", "Osc1 Shape");
+    H_PARAM("osc1_pulsewidth", "Osc1 PW");
+    H_PARAM("osc1_wave_select", "Osc1 Wave");
+    H_PARAM("osc1_semitone", "Osc1 Semi");
+    H_PARAM("osc1_keyfollow", "Osc1 KeyFlw");
+    H_PARAM("osc2_shape", "Osc2 Shape");
+    H_PARAM("osc2_pulsewidth", "Osc2 PW");
+    H_PARAM("osc2_wave_select", "Osc2 Wave");
+    H_PARAM("osc2_semitone", "Osc2 Semi");
+    H_PARAM("osc2_detune", "Osc2 Detune");
+    H_PARAM("osc2_fm_amount", "Osc2 FM Amt");
+    H_PARAM("osc2_sync", "Osc2 Sync");
+    H_PARAM("osc2_filt_env_amt", "Osc2 FiltEnv");
+    H_PARAM("fm_filt_env_amt", "FM FiltEnv");
+    H_PARAM("osc2_keyfollow", "Osc2 KeyFlw");
+    H_PARAM("osc_fm_mode", "FM Mode");
+    H_PARAM("osc_init_phase", "Init Phase");
+    H_PARAM("osc_balance", "Osc Balance");
+    H_PARAM("sub_osc_volume", "Sub Volume");
+    H_PARAM("sub_osc_shape", "Sub Shape");
+    H_PARAM("osc_mainvolume", "Osc Volume");
+    H_PARAM("noise_volume", "Noise Vol");
+    H_PARAM("ringmod_volume", "Ring Mod Vol");
+    H_PARAM("noise_color", "Noise Color");
+    if (model_level >= 1) {
+        H_PARAM("osc3_mode", "Osc3 Mode");
+        H_PARAM("osc3_volume", "Osc3 Volume");
+        H_PARAM("osc3_semitone", "Osc3 Semi");
+        H_PARAM("osc3_detune", "Osc3 Detune");
+    }
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Filters */
+    H_APPEND("\"filter\":{\"children\":null,"
+             "\"knobs\":[\"cutoff\",\"filter1_resonance\",\"filter1_mode\",\"filter_routing\"],"
+             "\"params\":[");
+    H_PARAM("cutoff", "Cutoff");
+    H_PARAM("cutoff2_offset", "Cutoff2 Offset");
+    H_PARAM("filter1_resonance", "Filt1 Reso");
+    H_PARAM("filter2_resonance", "Filt2 Reso");
+    H_PARAM("filter1_env_amt", "Filt1 EnvAmt");
+    H_PARAM("filter2_env_amt", "Filt2 EnvAmt");
+    H_PARAM("filter1_keyfollow", "Filt1 KeyFlw");
+    H_PARAM("filter2_keyfollow", "Filt2 KeyFlw");
+    H_PARAM("filter_balance", "Filt Balance");
+    H_PARAM("saturation_curve", "Saturation");
+    H_PARAM("filter1_mode", "Filt1 Mode");
+    H_PARAM("filter2_mode", "Filt2 Mode");
+    H_PARAM("filter_routing", "Filt Routing");
+    H_PARAM("filter_select", "Filter Select");
+    H_PARAM("filter2_cutoff_link", "Filt2 Link");
+    H_PARAM("filter_keytrack_base", "KeyTrk Base");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Filter Envelope */
+    H_APPEND("\"flt_env\":{\"children\":null,"
+             "\"knobs\":[\"flt_attack\",\"flt_decay\",\"flt_sustain\",\"flt_release\"],"
+             "\"params\":[");
+    H_PARAM("flt_attack", "Attack");
+    H_PARAM("flt_decay", "Decay");
+    H_PARAM("flt_sustain", "Sustain");
+    H_PARAM("flt_sustain_time", "Sus Time");
+    H_PARAM("flt_release", "Release");
+    H_PARAM("filter1_env_polarity", "Flt1 Polarity");
+    H_PARAM("filter2_env_polarity", "Flt2 Polarity");
+    H_PARAM("flt1_envamt_velocity", "Flt1 Vel");
+    H_PARAM("flt2_envamt_velocity", "Flt2 Vel");
+    H_PARAM("resonance1_velocity", "Reso1 Vel");
+    H_PARAM("resonance2_velocity", "Reso2 Vel");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Amp Envelope */
+    H_APPEND("\"amp_env\":{\"children\":null,"
+             "\"knobs\":[\"amp_attack\",\"amp_decay\",\"amp_sustain\",\"amp_release\"],"
+             "\"params\":[");
+    H_PARAM("amp_attack", "Attack");
+    H_PARAM("amp_decay", "Decay");
+    H_PARAM("amp_sustain", "Sustain");
+    H_PARAM("amp_sustain_time", "Sus Time");
+    H_PARAM("amp_release", "Release");
+    H_PARAM("amp_velocity", "Velocity");
+    H_PARAM("punch_intensity", "Punch");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* LFO 1 */
+    H_APPEND("\"lfo1\":{\"children\":null,"
+             "\"knobs\":[\"lfo1_rate\",\"lfo1_shape\",\"lfo1_symmetry\",\"osc1_lfo1_amount\"],"
+             "\"params\":[");
+    H_PARAM("lfo1_rate", "Rate");
+    H_PARAM("lfo1_shape", "Shape");
+    H_PARAM("lfo1_env_mode", "Env Mode");
+    H_PARAM("lfo1_mode", "Mode");
+    H_PARAM("lfo1_symmetry", "Symmetry");
+    H_PARAM("lfo1_keyfollow", "KeyFlw");
+    H_PARAM("lfo1_keytrigger", "KeyTrig");
+    H_PARAM("lfo1_clock", "Clock");
+    H_PARAM("osc1_lfo1_amount", "-> Osc1");
+    H_PARAM("osc2_lfo1_amount", "-> Osc2");
+    H_PARAM("pw_lfo1_amount", "-> PW");
+    H_PARAM("reso_lfo1_amount", "-> Reso");
+    H_PARAM("filtgain_lfo1_amount", "-> FiltGain");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* LFO 2 */
+    H_APPEND("\"lfo2\":{\"children\":null,"
+             "\"knobs\":[\"lfo2_rate\",\"lfo2_shape\",\"lfo2_symmetry\",\"shape_lfo2_amount\"],"
+             "\"params\":[");
+    H_PARAM("lfo2_rate", "Rate");
+    H_PARAM("lfo2_shape", "Shape");
+    H_PARAM("lfo2_env_mode", "Env Mode");
+    H_PARAM("lfo2_mode", "Mode");
+    H_PARAM("lfo2_symmetry", "Symmetry");
+    H_PARAM("lfo2_keyfollow", "KeyFlw");
+    H_PARAM("lfo2_keytrigger", "KeyTrig");
+    H_PARAM("lfo2_clock", "Clock");
+    H_PARAM("shape_lfo2_amount", "-> Shape");
+    H_PARAM("fm_lfo2_amount", "-> FM");
+    H_PARAM("cutoff1_lfo2_amount", "-> Cut1");
+    H_PARAM("cutoff2_lfo2_amount", "-> Cut2");
+    H_PARAM("pan_lfo2_amount", "-> Pan");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* LFO 3 */
+    H_APPEND("\"lfo3\":{\"children\":null,"
+             "\"knobs\":[\"lfo3_rate\",\"lfo3_shape\",\"lfo3_destination\",\"osc_lfo3_amount\"],"
+             "\"params\":[");
+    H_PARAM("lfo3_rate", "Rate");
+    H_PARAM("lfo3_shape", "Shape");
+    H_PARAM("lfo3_mode", "Mode");
+    H_PARAM("lfo3_keyfollow", "KeyFlw");
+    H_PARAM("lfo3_destination", "Destination");
+    H_PARAM("osc_lfo3_amount", "Osc Amount");
+    H_PARAM("lfo3_fadein_time", "Fade-In");
+    H_PARAM("lfo3_clock", "Clock");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Arpeggiator */
+    H_APPEND("\"arp\":{\"children\":null,"
+             "\"knobs\":[\"arp_mode\",\"arp_pattern\",\"arp_octave_range\",\"arp_swing\"],"
+             "\"params\":[");
+    H_PARAM("arp_mode", "Mode");
+    H_PARAM("arp_pattern", "Pattern");
+    H_PARAM("arp_octave_range", "Octaves");
+    H_PARAM("arp_hold", "Hold");
+    H_PARAM("arp_note_length", "Note Length");
+    H_PARAM("arp_swing", "Swing");
+    H_PARAM("arp_clock", "Clock");
+    H_PARAM("clock_tempo", "Tempo");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Effects */
+    H_APPEND("\"fx\":{\"children\":null,"
+             "\"knobs\":[\"chorus_mix\",\"effect_send\",\"delay_time\",\"delay_feedback\"],"
+             "\"params\":[");
+    H_PARAM("chorus_mix", "Chorus Mix");
+    H_PARAM("chorus_rate", "Chorus Rate");
+    H_PARAM("chorus_depth", "Chorus Depth");
+    H_PARAM("chorus_delay", "Chorus Delay");
+    H_PARAM("chorus_feedback", "Chorus Fdbk");
+    H_PARAM("chorus_lfo_shape", "Chorus LFO");
+    /* Dly/Rev Mode exists only on Virus B/C (the A has no reverb / mode selector). */
+    if (model_level >= VIRUS_MODEL_BC)
+        H_PARAM("delay_reverb_mode", "Dly/Rev Mode");
+    H_PARAM("effect_send", "Effect Send");
+    H_PARAM("delay_time", "Delay Time");
+    H_PARAM("delay_feedback", "Delay Fdbk");
+    if (model_level >= VIRUS_MODEL_BC)
+        H_PARAM("delay_rate_rev_decay", "Rate/Decay");
+    else
+        H_PARAM("delay_rate_rev_decay", "Delay Rate");
+    H_PARAM("delay_depth", "Delay Depth");
+    H_PARAM("delay_lfo_shape", "Delay LFO");
+    H_PARAM("delay_color", "Delay Color");
+    H_PARAM("delay_clock", "Delay Clock");
+    if (model_level >= 1) {
+        H_PARAM("phaser_mode", "Phaser Mode");
+        H_PARAM("phaser_mix", "Phaser Mix");
+        H_PARAM("phaser_rate", "Phaser Rate");
+        H_PARAM("phaser_depth", "Phaser Depth");
+        H_PARAM("phaser_frequency", "Phaser Freq");
+        H_PARAM("phaser_feedback", "Phaser Fdbk");
+        H_PARAM("phaser_spread", "Phaser Spread");
+        H_PARAM("distortion_curve", "Dist Curve");
+        H_PARAM("distortion_intensity", "Dist Amount");
+        H_PARAM("bass_intensity", "Analog Boost");
+        H_PARAM("bass_tune", "Boost Tune");
+        H_PARAM("low_eq_freq", "Lo EQ Freq");
+        H_PARAM("low_eq_gain", "Lo EQ Gain");
+        H_PARAM("mid_eq_freq", "Mid EQ Freq");
+        H_PARAM("mid_eq_gain", "Mid EQ Gain");
+        H_PARAM("mid_eq_q", "Mid EQ Q");
+        H_PARAM("high_eq_freq", "Hi EQ Freq");
+        H_PARAM("high_eq_gain", "Hi EQ Gain");
+    }
+    if (model_level >= 2) {
+        H_PARAM("vocoder_mode", "Vocoder Mode");
+        H_PARAM("input_follower_mode", "Input Follow");
+        H_PARAM("input_ringmod", "Input RingMod");
+    }
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Mod Matrix */
+    H_APPEND("\"mod\":{\"children\":null,"
+             "\"knobs\":[\"assign1_amount\",\"assign2_amount1\",\"assign3_amount1\",\"lfo1_assign_amount\"],"
+             "\"params\":[");
+    H_PARAM("assign1_source", "Slot1 Src");
+    H_PARAM("assign1_destination", "Slot1 Dst");
+    H_PARAM("assign1_amount", "Slot1 Amt");
+    H_PARAM("assign2_source", "Slot2 Src");
+    H_PARAM("assign2_dest1", "Slot2 Dst1");
+    H_PARAM("assign2_amount1", "Slot2 Amt1");
+    H_PARAM("assign2_dest2", "Slot2 Dst2");
+    H_PARAM("assign2_amount2", "Slot2 Amt2");
+    H_PARAM("assign3_source", "Slot3 Src");
+    H_PARAM("assign3_dest1", "Slot3 Dst1");
+    H_PARAM("assign3_amount1", "Slot3 Amt1");
+    H_PARAM("assign3_dest2", "Slot3 Dst2");
+    H_PARAM("assign3_amount2", "Slot3 Amt2");
+    H_PARAM("assign3_dest3", "Slot3 Dst3");
+    H_PARAM("assign3_amount3", "Slot3 Amt3");
+    H_PARAM("lfo1_assign_dest", "LFO1 Dst");
+    H_PARAM("lfo1_assign_amount", "LFO1 Amt");
+    H_PARAM("lfo2_assign_dest", "LFO2 Dst");
+    H_PARAM("lfo2_assign_amount", "LFO2 Amt");
+    if (model_level >= 1) {
+        H_PARAM("assign4_source", "Slot4 Src");
+        H_PARAM("assign4_destination", "Slot4 Dst");
+        H_PARAM("assign4_amount", "Slot4 Amt");
+        H_PARAM("assign5_source", "Slot5 Src");
+        H_PARAM("assign5_destination", "Slot5 Dst");
+        H_PARAM("assign5_amount", "Slot5 Amt");
+        H_PARAM("assign6_source", "Slot6 Src");
+        H_PARAM("assign6_destination", "Slot6 Dst");
+        H_PARAM("assign6_amount", "Slot6 Amt");
+    }
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Performance */
+    H_APPEND("\"perf\":{\"children\":null,"
+             "\"knobs\":[\"patch_volume\",\"panorama\",\"unison_mode\",\"portamento_time\"],"
+             "\"params\":[");
+    H_PARAM("patch_volume", "Volume");
+    H_PARAM("panorama", "Panorama");
+    H_PARAM("transpose", "Transpose");
+    H_PARAM("key_mode", "Key Mode");
+    H_PARAM("unison_mode", "Unison Mode");
+    H_PARAM("unison_detune", "Unison Detune");
+    H_PARAM("unison_pan_spread", "Unison Pan");
+    H_PARAM("unison_lfo_phase", "Unison LFO Ph");
+    H_PARAM("portamento_time", "Portamento");
+    H_PARAM("bender_range_up", "Bend Up");
+    H_PARAM("bender_range_down", "Bend Down");
+    H_PARAM("osc1_shape_velocity", "Osc1 Shp Vel");
+    H_PARAM("osc2_shape_velocity", "Osc2 Shp Vel");
+    H_PARAM("pulsewidth_velocity", "PW Velocity");
+    H_PARAM("fm_amount_velocity", "FM Amt Vel");
+    H_PARAM("input_mode", "Input Mode");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]},");
+
+    /* Settings */
+    H_APPEND("\"settings\":{\"children\":null,"
+             "\"knobs\":[\"dsp_clock\",\"gain\"],"
+             "\"params\":[");
+    H_PARAM("rom_index", "ROM");
+    H_PARAM("dsp_clock", "DSP Clock");
+    H_PARAM("gain", "Gain");
+    if (buf[off-1] == ',') off--;
+    H_APPEND("]}");
+
+    H_APPEND("}}");
+
+    #undef H_APPEND
+    #undef H_PARAM
+    #undef H_LEVEL
+
+    return off;
+}
+
+static int v2_get_param(void *instance, const char *key, char *buf, int buf_len) {
+    virus_instance_t *inst = (virus_instance_t*)instance;
+    if (!inst || !inst->shm) return -1;
+    virus_shm_t *shm = inst->shm;
+
+    {
+        int on = 0, n;
+        if ((n = slot_key(key, "bank_slot_", BANK_SLOTS, &on)) != 0) {
+            const int b = n - 1;
+            if (on) return snprintf(buf, buf_len, "%d", b == shm->current_bank ? 1 : 0);
+            if (b >= shm->bank_count) return snprintf(buf, buf_len, "%s", "");
+            if (b < shm->rom_bank_count) return snprintf(buf, buf_len, "BANK %c", 'A' + b);
+            return snprintf(buf, buf_len, "%s", shm->user_banks[b - shm->rom_bank_count].name);
+        }
+        if ((n = slot_key(key, "patch_slot_", PATCH_SLOTS, &on)) != 0) {
+            const int p = inst->patch_page * PATCH_SLOTS + n - 1;
+            const int pc = shm->cur_bank_preset_count > 0 ? shm->cur_bank_preset_count : shm->preset_count;
+            if (on) return snprintf(buf, buf_len, "%d", p == shm->current_preset ? 1 : 0);
+            if (p >= pc) return snprintf(buf, buf_len, "%s", "");
+            const char *nm = shm_lookup_preset_name(shm, shm->current_bank, p);
+            return snprintf(buf, buf_len, "%03d %s", p + 1, nm ? nm : "");
+        }
+        if (strcmp(key, "patch_page_text") == 0)
+            return snprintf(buf, buf_len, "PAGE %d / %d", inst->patch_page + 1, patch_pages(shm));
+    }
+
+    if (strcmp(key, "preset") == 0) return snprintf(buf, buf_len, "%d", shm->current_preset);
+    if (strcmp(key, "preset_count") == 0) return snprintf(buf, buf_len, "%d",
+        shm->cur_bank_preset_count > 0 ? shm->cur_bank_preset_count : shm->preset_count);
+    if (strcmp(key, "preset_name") == 0) {
+        shm_refresh_current_preset_name(shm);
+        return snprintf(buf, buf_len, "%s", (const char*)shm->preset_name);
+    }
+    if (strcmp(key, "name") == 0) return snprintf(buf, buf_len, "Virus");
+    if (strcmp(key, "bank_index") == 0) return snprintf(buf, buf_len, "%d", shm->current_bank);
+    if (strcmp(key, "bank_count") == 0) return snprintf(buf, buf_len, "%d", shm->bank_count);
+    if (strcmp(key, "bank_name") == 0) return snprintf(buf, buf_len, "%s", (const char*)shm->bank_name);
+    if (strcmp(key, "patch_in_bank") == 0) return snprintf(buf, buf_len, "%d", shm->current_preset + 1);
+    if (strcmp(key, "octave_transpose") == 0) return snprintf(buf, buf_len, "%d", shm->octave_transpose);
+    /* Report the user's requested override (dsp_clock_percent) first, not the
+     * lagging dsp_clock_applied. set_param writes percent; the child copies it to
+     * applied a block later. Reading applied here makes a just-set value read back
+     * stale (UI/host see the old number) -> the setting appears to "snap back".
+     * Fall back to applied (then a generic 40) only when percent==0 (auto mode). */
+    if (strcmp(key, "dsp_clock") == 0) return snprintf(buf, buf_len, "%d", shm->dsp_clock_percent > 0 ? shm->dsp_clock_percent : (shm->dsp_clock_applied > 0 ? shm->dsp_clock_applied : 40));
+    /* "Yes" once a Virus B or C ROM is running: the skin shows the B/C-only panels only then (layout when=rom_bc:Yes) */
+    if (strcmp(key, "rom_bc") == 0) return snprintf(buf, buf_len, "%s", (shm->rom_model_name[0] == 'B' || shm->rom_model_name[0] == 'C') ? "Yes" : "No");
+    /* "Yes" once a Virus B or C ROM is running: the skin shows the B/C-only panels only then (layout when=rom_bc:Yes) */
+    if (strcmp(key, "rom_bc") == 0) return snprintf(buf, buf_len, "%s", (shm->rom_model_name[0] == 'B' || shm->rom_model_name[0] == 'C') ? "Yes" : "No");
+    if (strcmp(key, "rom_model") == 0) return snprintf(buf, buf_len, "%s", shm->rom_model_name[0] ? (const char*)shm->rom_model_name : "?");
+    if (strcmp(key, "rom_index") == 0) return snprintf(buf, buf_len, "%d", shm->rom_index);
+    /* HAS_DISPLAY_REV (wrapper/vst2_wrap.c polls this): changes whenever the emulator moved values by itself, i.e. a
+     * finished boot, a bank/preset change, or a patch the firmware has now loaded. */
+    if (strcmp(key, "display_rev") == 0)
+        return snprintf(buf, buf_len, "%u", (unsigned)(shm->preset_done_gen * 131u + shm->pending_single_done_gen * 977u +
+                        (unsigned)shm->current_bank * 7919u + (unsigned)shm->current_preset * 104729u +
+                        (unsigned)shm->loading_complete * 15485863u + (unsigned)shm->rom_index * 32452843u));
+    if (strcmp(key, "rom_count") == 0) return snprintf(buf, buf_len, "%d", shm->rom_count);
+    if (strcmp(key, "rom_name") == 0) {
+        int idx = shm->rom_index;
+        if (idx >= 0 && idx < shm->rom_count && shm->rom_names[idx][0])
+            return snprintf(buf, buf_len, "%s", shm->rom_names[idx]);
+        /* Same reasoning as preset_name: dashes are an answer, and during the
+         * boot we do not have one. */
+        if (shm_still_loading(shm) && shm->loading_status[0])
+            return snprintf(buf, buf_len, "%s", (const char*)shm->loading_status);
+        return snprintf(buf, buf_len, "---");
+    }
+    if (strcmp(key, "rom_list") == 0) {
+        int off = 0;
+        for (int i = 0; i < shm->rom_count && off < buf_len - 80; i++) {
+            if (i > 0) off += snprintf(buf+off, buf_len-off, ",");
+            off += snprintf(buf+off, buf_len-off, "%s", shm->rom_names[i]);
+        }
+        return off;
+    }
+    if (strcmp(key, "gain") == 0) return snprintf(buf, buf_len, "%d", shm->gain_percent > 0 ? shm->gain_percent : 70);
+    if (strcmp(key, "loading_status") == 0) return snprintf(buf, buf_len, "%s", (const char*)shm->loading_status);
+    /*
+     * THE KEY THE HOST ACTUALLY WAITS ON.
+     *
+     * Schwung's shadow UI holds a "Loading..." screen while a component reports
+     * is_loading == "1" (openComponentEditor / the knob grid's contract settle,
+     * src/shadow/shadow_ui.js) rather than falling through to an empty editor.
+     * This module never served the key, so an unserved "" told the host "does
+     * not implement it" and the wait it already knows how to do never ran.
+     *
+     * Must be exactly "1" or "0" — anything else and the host latches
+     * isLoadingSupported=false and never asks again for this component.
+     */
+    if (strcmp(key, "is_loading") == 0)
+        return snprintf(buf, buf_len, "%d", shm_still_loading(shm) ? 1 : 0);
+    /* ENGINE readout on the main page: ring underruns since the emulator started, and the emulator thread's CPU (percent of one core) */
+    if (strcmp(key, "engine_stats") == 0) {
+        return snprintf(buf, buf_len, "DROPOUTS %d   DSP CPU %d%%", shm->underrun_count, shm->dsp_cpu_pct);
+    }
+    if (strcmp(key, "debug_info") == 0) {
+        int avail = shm_ring_available(shm);
+        int blocks = shm->emu_blocks > 0 ? shm->emu_blocks : 1;
+        return snprintf(buf, buf_len,
+            "buf=%d min=%d ur=%d blk=%d proc_avg=%lld proc_max=%d peak=%.2f emu=%d",
+            avail, shm->prof_ring_min, shm->underrun_count, shm->emu_blocks,
+            (long long)(shm->prof_process_us_total / blocks),
+            shm->prof_process_max_us,
+            (double)shm->prof_peak_level,
+            (int)inst->emu_thread_joinable);
+    }
+    if (strcmp(key, "prof_reset") == 0) {
+        shm->prof_process_us_total = 0;
+        shm->prof_ring_min = AUDIO_RING_SIZE;
+        shm->prof_process_max_us = 0;
+        shm->prof_peak_level = 0.0f;
+        shm->underrun_count = 0;
+        shm->emu_blocks = 0;
+        return snprintf(buf, buf_len, "reset");
+    }
+    for (int i = 0; i < NUM_PARAMS; i++)
+        if (strcmp(key, g_params[i].key) == 0)
+            return snprintf(buf, buf_len, "%d", get_param_value(shm, &g_params[i]));
+
+    if (strcmp(key, "state") == 0) {
+        /* A preset change updates cc_values asynchronously on the emulator
+         * child once the emulated firmware has loaded the new single. Briefly
+         * block here so a remote-UI state re-read right after a preset switch
+         * serializes the NEW patch's values instead of the previous one's.
+         * Capped well under the host's ~200ms param idle timeout. */
+        uint32_t req = shm->preset_req_gen;
+        __sync_synchronize();
+        for (int i = 0; i < 240 && shm->preset_done_gen != req; i++) {
+            usleep(500);
+            __sync_synchronize();
+        }
+        /* If no faithful single has been captured yet (fresh child before any patch
+         * load, or a just-reset shm), return EMPTY rather than a single-less reference
+         * state. The host's autosave preserves the existing good slot_N.json on an empty
+         * read (bailIfEmpty in shadow_ui.js buildSlotPatchJson), so a transient no-single
+         * window can't clobber a faithful self-contained save with a single-less one.
+         * current_single_valid is set only by a real preset load (Program Change) or a
+         * self-contained restore inject, never by the passive boot-default.
+         * R1: but DON'T bail if the user has edited a param in this no-single window —
+         * those edits must serialize (referentially, like upstream) instead of being
+         * silently dropped. params_user_dirty is set on a param edit and cleared on a
+         * real load/restore/restart, so a good slot is still protected when no edit is pending. */
+        if (!shm->current_single_valid && !inst->params_user_dirty) {
+            if (buf_len > 0) buf[0] = '\0';
+            return 0;
+        }
+        __sync_synchronize();   /* acquire: pair with the child's release before valid=1,
+                                 * so the 512 current_single bytes read below aren't torn */
+        /* The embedded single (Tier 2 self-contained recall) is read from
+         * shm->current_single, which the child keeps continuously fresh — no
+         * blocking dump on this read path (autosave stays cheap). */
+        int off = 0;
+        off += snprintf(buf+off, buf_len-off, "{\"state_version\":%d,\"bank\":%d,\"preset\":%d,\"octave_transpose\":%d",
+            VIRUS_STATE_VERSION, shm->current_bank, shm->current_preset, shm->octave_transpose);
+        /* Persist the user's requested override (dsp_clock_percent), not the
+         * lagging dsp_clock_applied -- otherwise an autosave taken right after a
+         * change captures the stale applied value and the subsequent state restore
+         * clobbers the new setting (the value "doesn't stick"). Falls back to
+         * applied (then 40) only in auto mode (percent==0). */
+        off += snprintf(buf+off, buf_len-off, ",\"dsp_clock\":%d,\"gain\":%d,\"rom_index\":%d,\"rom_model\":\"%s\"",
+            shm->dsp_clock_percent > 0 ? shm->dsp_clock_percent : (shm->dsp_clock_applied > 0 ? shm->dsp_clock_applied : 40),
+            shm->gain_percent > 0 ? shm->gain_percent : 70, shm->rom_index,
+            shm->rom_model_name[0] ? (const char*)shm->rom_model_name : "?");
+        /* Preset-browser metadata for the remote UI. getParam in the manager is
+         * cache-only, so these have to ride the bulk state seed (which the host
+         * also re-reads after every preset/bank change) to reach the browser. */
+        char bank_name_esc[64];
+        json_escape_into(bank_name_esc, sizeof(bank_name_esc), (const char*)shm->bank_name);
+        off += snprintf(buf+off, buf_len-off,
+            ",\"bank_index\":%d,\"bank_count\":%d,\"preset_count\":%d,\"patch_in_bank\":%d,\"bank_name\":\"%s\"",
+            shm->current_bank, shm->bank_count,
+            shm->cur_bank_preset_count > 0 ? shm->cur_bank_preset_count : shm->preset_count,
+            shm->current_preset + 1, bank_name_esc);
+        /* Embed the full 512-byte single as hex (1024 chars) BEFORE the ~185 params.
+         * Ordering matters: the host stores the slot state through a fixed buffer that
+         * is smaller than header+single+params, so whatever is serialized LAST gets
+         * truncated away. Recall only needs the single (self-contained Tier-2 path); the
+         * per-param block is just a remote-UI seed and tolerates truncation. Writing the
+         * single first guarantees a faithful patch recall even when the tail is cut. */
+        if (shm->current_single_valid && off + 1024 + 16 < buf_len) {
+            off += snprintf(buf+off, buf_len-off, ",\"single\":\"");
+            for (int i = 0; i < 512 && off + 2 < buf_len; i++) {
+                static const char hexd[] = "0123456789abcdef";
+                uint8_t b = shm->current_single[i];
+                buf[off++] = hexd[b >> 4];
+                buf[off++] = hexd[b & 0xF];
+            }
+            off += snprintf(buf+off, buf_len-off, "\"");
+        }
+        /* Guard the remaining length: snprintf returns the would-be length, so an
+         * unguarded off can pass buf_len and make buf_len-off a huge size_t (OOB).
+         * The single (written first) is what recall needs; truncating the param tail
+         * is acceptable. Matches the chain_params loop's off<buf_len discipline. */
+        for (int i = 0; i < NUM_PARAMS && off < buf_len - 64; i++) {
+            if (!is_param_seen(shm, &g_params[i])) continue;
+            off += snprintf(buf+off, buf_len-off, ",\"%s\":%d",
+                g_params[i].key, get_param_value(shm, &g_params[i]));
+        }
+        if (off < buf_len - 1)
+            off += snprintf(buf+off, buf_len-off, "}");
+        return off;
+    }
+    if (strcmp(key, "ui_hierarchy") == 0) {
+        return build_ui_hierarchy(buf, buf_len, (const char*)shm->rom_model_name);
+    }
+    if (strcmp(key, "chain_params") == 0) {
+        int off = 0;
+        int bank_max = shm->bank_count > 0 ? shm->bank_count - 1 : 0;
+        off += snprintf(buf+off, buf_len-off,
+            "[{\"key\":\"preset\",\"name\":\"Preset\",\"type\":\"int\",\"min\":0,\"max\":127},"
+            "{\"key\":\"bank_index\",\"name\":\"Bank\",\"type\":\"int\",\"min\":0,\"max\":%d},"
+            "{\"key\":\"octave_transpose\",\"name\":\"Octave\",\"type\":\"int\",\"min\":-4,\"max\":4},"
+            "{\"key\":\"rom_index\",\"name\":\"ROM\",\"type\":\"enum\",\"options\":[", bank_max);
+        for (int i = 0; i < shm->rom_count; i++) {
+            if (i > 0) off += snprintf(buf+off, buf_len-off, ",");
+            off += snprintf(buf+off, buf_len-off, "\"%s\"", shm->rom_names[i]);
+        }
+        if (shm->rom_count == 0)
+            off += snprintf(buf+off, buf_len-off, "\"(loading)\"");
+        off += snprintf(buf+off, buf_len-off, "]},"
+            "{\"key\":\"dsp_clock\",\"short_name\":\"DSP %\",\"name\":\"DSP Clock %%\",\"type\":\"int\",\"min\":10,\"max\":100,\"step\":5},"
+            "{\"key\":\"gain\",\"name\":\"Gain %%\",\"type\":\"int\",\"min\":1,\"max\":100}");
+        int dlevel = model_name_to_level((const char*)shm->rom_model_name);
+        for (int i = 0; i < NUM_PARAMS && off < buf_len - 200; i++) {
+            if (!param_available_for_model(&g_params[i], (const char*)shm->rom_model_name))
+                continue;
+            const char *pname = param_display_name(&g_params[i], dlevel);
+            if (g_params[i].options && g_params[i].num_options > 0) {
+                int n = g_params[i].num_options;
+                int range = g_params[i].max_val - g_params[i].min_val + 1;
+                if (range < n) n = range;
+                off += snprintf(buf+off, buf_len-off,
+                    ",{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"enum\",\"options\":[",
+                    g_params[i].key, pname);
+                for (int j = 0; j < n && off < buf_len - 50; j++) {
+                    if (j > 0) off += snprintf(buf+off, buf_len-off, ",");
+                    off += snprintf(buf+off, buf_len-off, "\"%s\"", g_params[i].options[j]);
+                }
+                off += snprintf(buf+off, buf_len-off, "]}");
+            } else {
+                off += snprintf(buf+off, buf_len-off,
+                    ",{\"key\":\"%s\",\"name\":\"%s\",\"type\":\"int\",\"min\":%d,\"max\":%d}",
+                    g_params[i].key, pname, g_params[i].min_val, g_params[i].max_val);
+            }
+        }
+        off += snprintf(buf+off, buf_len-off, "]");
+        return off;
+    }
+    return -1;
+}
+
+static int v2_get_error(void *instance, char *buf, int buf_len) {
+    virus_instance_t *inst = (virus_instance_t*)instance;
+    if (!inst || !inst->shm || inst->shm->load_error[0] == '\0') return 0;
+    return snprintf(buf, buf_len, "%s", (const char*)inst->shm->load_error);
+}
+
+/* CR-1: consecutive underrunning render blocks with a FROZEN child heartbeat before
+ * we declare the child dead/hung and respawn. ~hundreds of blocks ≈ ~1s; long enough
+ * that a transient underrun (where the child is alive and child_alive still advances)
+ * never trips it, short enough to recover audio promptly. */
+#define WD_STALL_RESPAWN 400
+
+static void v2_render_block(void *instance, int16_t *out, int frames) {
+    virus_instance_t *inst = (virus_instance_t*)instance;
+    if (!inst || !inst->shm || !inst->shm->loading_complete || !inst->shm->child_ready) {
+        memset(out, 0, frames * 2 * sizeof(int16_t));
+        return;
+    }
+
+    /* Apply pending state that arrived before child was ready */
+    if (inst->pending_state_valid && inst->pending_state) {
+        inst->pending_state_valid = 0;
+        char *state = inst->pending_state;
+        inst->pending_state = nullptr;
+        vlog("[parent] applying pending state after boot");
+        v2_set_param(instance, "state", state);
+        free(state);
+    }
+
+    virus_shm_t *shm = inst->shm;
+
+    int avail = shm_ring_available(shm);
+    if (shm->prof_ring_min == 0 || avail < shm->prof_ring_min)
+        shm->prof_ring_min = avail;
+    int to_read = (avail < frames) ? avail : frames;
+    __sync_synchronize();   /* acquire: pair with the child's release before ring_write */
+    int rd = shm->ring_read;
+    for (int i = 0; i < to_read; i++) {
+        out[i*2+0] = shm->audio_ring[rd*2+0];
+        out[i*2+1] = shm->audio_ring[rd*2+1];
+        rd = (rd + 1) % AUDIO_RING_SIZE;
+    }
+    shm->ring_read = rd;
+
+    if (to_read < frames) {
+        shm->underrun_count++;
+        memset(out + to_read * 2, 0, (frames - to_read) * 2 * sizeof(int16_t));
+    }
+    shm->render_count++;
+
+    /* CR-1: child-liveness watchdog. A crashed/hung child stops advancing child_alive
+     * while the ring drains, after which this path would memset silence forever with no
+     * recovery. Detect a frozen heartbeat DURING underrun (a healthy-but-CPU-starved
+     * child keeps advancing child_alive, so it can't false-trip) and kick the existing
+     * restart path off the audio thread to reap + respawn with the preserved config. */
+    if (to_read < frames) {
+        int a = shm->child_alive;
+        if (a == inst->wd_alive_last) {
+            if (++inst->wd_stall >= WD_STALL_RESPAWN && !inst->boot_thread_running) {
+                inst->wd_stall = 0;
+                snprintf((char*)shm->load_error, sizeof(shm->load_error),
+                         "DSP stalled");
+                vlog("[parent] watchdog: emulator heartbeat frozen (no respawn: a thread cannot be killed)");
+            }
+        } else {
+            inst->wd_alive_last = a;
+            inst->wd_stall = 0;
+        }
+    } else {
+        inst->wd_alive_last = shm->child_alive;
+        inst->wd_stall = 0;
+    }
+}
+
+/* =====================================================================
+ * Entry point
+ * ===================================================================== */
+
+static plugin_api_v2_t g_plugin_api_v2;
+
+extern "C" plugin_api_v2_t* move_plugin_init_v2(const host_api_v1_t *host) {
+    g_host = host;
+    memset(&g_plugin_api_v2, 0, sizeof(g_plugin_api_v2));
+    g_plugin_api_v2.api_version = MOVE_PLUGIN_API_VERSION_2;
+    g_plugin_api_v2.create_instance = v2_create_instance;
+    g_plugin_api_v2.destroy_instance = v2_destroy_instance;
+    g_plugin_api_v2.on_midi = v2_on_midi;
+    g_plugin_api_v2.set_param = v2_set_param;
+    g_plugin_api_v2.get_param = v2_get_param;
+    g_plugin_api_v2.get_error = v2_get_error;
+    g_plugin_api_v2.render_block = v2_render_block;
+    return &g_plugin_api_v2;
+}
