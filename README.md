@@ -58,5 +58,9 @@ source; `tools/make_layout.py` cuts sections out of the Galaxpel skin art and pl
 `src/VENDORED.md`, `docs/DEVELOPMENT.md`.
 
 ## Credits and licences
-See [CREDITS.md](CREDITS.md). Osirus is **GPL-3.0** ([LICENSE](LICENSE)); the emulation is the work of the gearmulator / dsp56300
-authors, the Move module of Charles Vestal, and the skin art of Emre Babus.
+Osirus stands on the work of others; see [CREDITS.md](CREDITS.md) for the full list and each licence. In short:
+the Virus emulation and the DSP56300 emulator are **[gearmulator](https://github.com/dsp56300/gearmulator) / [dsp56300](https://github.com/dsp56300/dsp56300)** (GPL-3.0),
+the plugin glue is adapted from **[schwung-virus](https://github.com/charlesvestal/schwung-virus)** by Charles Vestal (GPL-3.0),
+the skin art is the **"Galaxpel" skin by Emre Babus** from gearmulator's Osirus plugin (GPL-3.0), the JIT is **[AsmJit](https://github.com/asmjit/asmjit)** (zlib),
+and the font is Bebas Neue (SIL OFL 1.1). Osirus is **GPL-3.0** ([LICENSE](LICENSE)).
+Not affiliated with or endorsed by Access Music; no ROM is included.

@@ -11,8 +11,15 @@ Osirus for MPC as a whole is distributed under the **GNU General Public License 
 | libresample | `src/gearmulator/libresample/` | Dominic Mazzoni (after resample-1.7 by Julius O. Smith), LGPL or BSD (`LICENSE-*.txt` there) |
 | Plugin glue (`virus_plugin.cpp`, `program_selection.*`) | `src/dsp/` | [schwung-virus](https://github.com/charlesvestal/schwung-virus) by Charles Vestal, GPL-3.0; changed for MPC (see `src/VENDORED.md`) |
 | Skin art: page backgrounds, knob filmstrip, header | `skin/galaxpel/`, derived `vst/images/` | The **"Galaxpel" skin by Emre Babus**, from gearmulator's Osirus plugin, GPL-3.0. Sections are cropped and scaled; controls are placed from its `.rml` |
-| Font | `vst/fonts/` | Bebas Neue, SIL Open Font License 1.1 |
+| Font | `vst/fonts/` | Bebas Neue by Ryoichi Tsunekawa (Dharma Type), SIL Open Font License 1.1 |
 | Plugin wrapper (not in this repo) | `mpc-vst-plugins` | [sd88me/mpc-vst-plugins](https://github.com/sd88me/mpc-vst-plugins); its Steinberg-SDK-free VST2 header layer |
+
+## Thanks
+- The **gearmulator / dsp56300 team** for the DSP56300 emulator and the Virus emulation that does all the real work, and for writing it as a library others can build on.
+- **Charles Vestal** for schwung-virus ("Move Everything: Osirus"), the working glue for loading a ROM, booting the emulated DSP and driving the Virus parameters, which this port adapts.
+- **Emre Babus**, author of the Galaxpel skin, whose artwork gives this plugin its look.
+- The **AsmJit** authors, whose JIT assembler makes the emulation fast enough to run on an MPC.
+- The Akai MPC plugin community for the VST2 and skin groundwork in mpc-vst-plugins.
 
 The Virus ROMs (firmware and factory sounds) are copyrighted by their owner and are **not** part of this project: bring your own.
 "Access", "Virus" and related names belong to Access Music GmbH; this project is not affiliated with or endorsed by them.
