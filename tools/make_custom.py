@@ -28,7 +28,7 @@ TAB = (62, 68, 84)
 INK = (209, 214, 228)
 INK_DIM = (140, 148, 168)
 INSET = (46, 51, 64)
-SOCK = 84                   # knob socket size on screen: 104 px art scaled down
+SOCK = 72                   # knob socket size on screen: 104 px art scaled down
 
 os.makedirs(os.path.join(OUT, "images"), exist_ok=True)
 if not INSTALL:
@@ -98,8 +98,9 @@ class Page:
     # ---- controls (drawn socket + label, and the live widget over it)
     def knob(self, cx, cy, key, label=None, qlink=True):
         self.im.paste(SOCKET, (cx - SOCK // 2, cy - SOCK // 2), SOCKET)
-        self.label(cx, cy + SOCK // 2 - 4, label or PARAMS[key]["name"].upper())
-        self.widgets.append('knob cx=%d cy=%d r=%d label="" key=%s ns=0 vs=0 bw=%d' % (cx, cy + Y86, SOCK // 2 - 8, key, SOCK))
+        self.label(cx, cy + SOCK // 2 - 2, label or PARAMS[key]["name"].upper(), INK, 18)
+        # the live value goes under the baked label (vy=): vs=15 px text, 22 px below the knob's own value row
+        self.widgets.append('knob cx=%d cy=%d r=%d label="" key=%s ns=0 vs=15 vy=22 bw=%d' % (cx, cy + Y86, SOCK // 2 - 6, key, SOCK + 24))
 
     def popup(self, cx, cy, key, label, w=150, h=34):
         self.label(cx, cy + h // 2 + 2, label, INK_DIM, 19)
@@ -233,7 +234,7 @@ p.readout(1088, 262, "engine_stats", "STATS", 340)
 p.button(722, 318, "all_notes_off", "PANIC")
 p.button(1088, 318, "init_patch", "INIT PATCH")
 p.panel(8, 354, 1264, 266, "OUTPUT", None)
-row(p, 16, 1264, 450, [("knob", "gain", "GAIN %"), ("knob", "dsp_clock", "DSP CLOCK %"), ("knob", "octave_transpose", "OCTAVE"), ("knob", "rom_index", "ROM NUMBER"),
+row(p, 16, 1264, 470, [("knob", "gain", "GAIN %"), ("knob", "dsp_clock", "DSP CLOCK %"), ("knob", "octave_transpose", "OCTAVE"), ("knob", "rom_index", "ROM NUMBER"),
                        ("knob", "bender_range_up", "BEND UP"), ("knob", "bender_range_down", "BEND DOWN")])
 p.done()
 
@@ -251,24 +252,24 @@ p.done()
 # ---------------------------------------------------------------- OSC
 p = Page("OSC", ["osc1_shape", "osc1_pulsewidth", "osc1_semitone", "osc1_keyfollow", "osc2_shape", "osc2_pulsewidth", "osc2_semitone", "osc2_keyfollow",
                   "osc2_detune", "osc2_fm_amount", "osc2_filt_env_amt", "fm_filt_env_amt", "osc3_semitone", "osc3_detune", "osc3_volume", "-"])
-p.panel(8, 8, 704, 138, "OSC 1", "osc")
-row(p, 20, 700, 84, [("popup", "osc1_wave_select", "WAVE", 150), ("knob", "osc1_shape", "SHAPE"), ("knob", "osc1_pulsewidth", "PULSEWIDTH"),
+p.panel(8, 8, 704, 158, "OSC 1", "osc")
+row(p, 20, 700, 82, [("popup", "osc1_wave_select", "WAVE", 150), ("knob", "osc1_shape", "SHAPE"), ("knob", "osc1_pulsewidth", "PULSEWIDTH"),
                      ("knob", "osc1_semitone", "SEMITONE"), ("knob", "osc1_keyfollow", "KEY FOLLOW")])
-p.panel(8, 154, 704, 250, "OSC 2", "osc")
-row(p, 20, 700, 230, [("popup", "osc2_wave_select", "WAVE", 150), ("knob", "osc2_shape", "SHAPE"), ("knob", "osc2_pulsewidth", "PULSEWIDTH"),
+p.panel(8, 174, 704, 282, "OSC 2", "osc")
+row(p, 20, 700, 248, [("popup", "osc2_wave_select", "WAVE", 150), ("knob", "osc2_shape", "SHAPE"), ("knob", "osc2_pulsewidth", "PULSEWIDTH"),
                       ("knob", "osc2_semitone", "SEMITONE"), ("knob", "osc2_keyfollow", "KEY FOLLOW")])
-p.inset(16, 282, 688, 114)
-row(p, 20, 700, 332, [("popup", "osc_fm_mode", "FM MODE", 150), ("knob", "osc2_fm_amount", "FM AMOUNT"), ("knob", "osc2_detune", "DETUNE"),
+p.inset(16, 330, 688, 118)
+row(p, 20, 700, 368, [("popup", "osc_fm_mode", "FM MODE", 150), ("knob", "osc2_fm_amount", "FM AMOUNT"), ("knob", "osc2_detune", "DETUNE"),
                       ("knob", "osc2_filt_env_amt", "ENV OSC2"), ("knob", "fm_filt_env_amt", "ENV FM")])
-p.panel(8, 412, 704, 208, "OSC 3", "osc")
-row(p, 20, 700, 504, [("popup", "osc3_mode", "OSC 3 MODE", 150), ("knob", "osc3_semitone", "SEMITONE"), ("knob", "osc3_detune", "DETUNE"), ("knob", "osc3_volume", "LEVEL")])
-p.panel(722, 8, 550, 240, "MIXER", "mixer")
-row(p, 730, 1264, 78, [("knob", "osc_balance", "OSC BALANCE"), ("knob", "osc_mainvolume", "OSC LEVEL"), ("knob", "noise_color", "NOISE COLOR")])
-row(p, 730, 1264, 182, [("knob", "noise_volume", "NOISE"), ("knob", "ringmod_volume", "RING MOD"), None])
-p.panel(722, 256, 550, 168, "SYNC / SUB / PORTAMENTO", "sub")
-row(p, 730, 1264, 336, [("toggle", "osc2_sync", "OSC 2 SYNC"), ("toggle", "sub_osc_shape", "SUB WAVE"), ("knob", "sub_osc_volume", "SUB LEVEL"), ("knob", "portamento_time", "PORTAMENTO")])
-p.panel(722, 432, 550, 188, "UNISON", "unison")
-row(p, 730, 1264, 524, [("popup", "unison_mode", "VOICES", 100), ("knob", "unison_detune", "DETUNE"), ("knob", "unison_pan_spread", "PAN SPREAD"),
+p.panel(8, 464, 704, 156, "OSC 3", "osc")
+row(p, 20, 700, 538, [("popup", "osc3_mode", "OSC 3 MODE", 150), ("knob", "osc3_semitone", "SEMITONE"), ("knob", "osc3_detune", "DETUNE"), ("knob", "osc3_volume", "LEVEL")])
+p.panel(722, 8, 550, 282, "MIXER", "mixer")
+row(p, 730, 1264, 82, [("knob", "osc_balance", "OSC BALANCE"), ("knob", "osc_mainvolume", "OSC LEVEL"), ("knob", "noise_color", "NOISE COLOR")])
+row(p, 730, 1264, 198, [("knob", "noise_volume", "NOISE"), ("knob", "ringmod_volume", "RING MOD"), None])
+p.panel(722, 298, 550, 158, "SYNC / SUB / PORTAMENTO", "sub")
+row(p, 730, 1264, 372, [("toggle", "osc2_sync", "OSC 2 SYNC"), ("toggle", "sub_osc_shape", "SUB WAVE"), ("knob", "sub_osc_volume", "SUB LEVEL"), ("knob", "portamento_time", "PORTAMENTO")])
+p.panel(722, 464, 550, 156, "UNISON", "unison")
+row(p, 730, 1264, 538, [("popup", "unison_mode", "VOICES", 100), ("knob", "unison_detune", "DETUNE"), ("knob", "unison_pan_spread", "PAN SPREAD"),
                         ("knob", "unison_lfo_phase", "LFO PHASE"), ("knob", "osc_init_phase", "PHASE INIT")])
 p.done()
 
@@ -276,15 +277,15 @@ p.done()
 p = Page("FILTER", ["cutoff", "filter1_resonance", "filter1_env_amt", "filter1_keyfollow", "resonance1_velocity", "flt1_envamt_velocity", "-", "-",
                     "cutoff2_offset", "filter2_resonance", "filter2_env_amt", "filter2_keyfollow", "resonance2_velocity", "flt2_envamt_velocity", "-", "-"])
 p.panel(8, 8, 1264, 612, "FILTERS", "filters")
-row(p, 20, 1260, 100, [("knob", "cutoff", "CUTOFF 1"), ("knob", "filter1_resonance", "RESONANCE 1"), ("knob", "filter1_env_amt", "ENV 1 AMT"),
-                       ("knob", "filter1_keyfollow", "KEYTRACK 1"), ("knob", "resonance1_velocity", "RES 1 VEL"), ("knob", "flt1_envamt_velocity", "ENV 1 VEL")])
-p.inset(60, 196, 1160, 232)
-row(p, 70, 460, 262, [("popup", "filter1_mode", "FILTER 1 MODE", 180)])
+row(p, 20, 1260, 84, [("knob", "cutoff", "CUTOFF 1"), ("knob", "filter1_resonance", "RESONANCE 1"), ("knob", "filter1_env_amt", "ENV 1 AMT"),
+                      ("knob", "filter1_keyfollow", "KEYTRACK 1"), ("knob", "resonance1_velocity", "RES 1 VEL"), ("knob", "flt1_envamt_velocity", "ENV 1 VEL")])
+p.inset(60, 180, 1160, 250)
+row(p, 70, 460, 244, [("popup", "filter1_mode", "FILTER 1 MODE", 180)])
 row(p, 70, 460, 366, [("popup", "filter2_mode", "FILTER 2 MODE", 180)])
-row(p, 460, 820, 312, [("knob", "filter_balance", "FILTER BALANCE")])
-row(p, 800, 1210, 262, [("popup", "filter_routing", "ROUTING", 180), ("knob", "filter_keytrack_base", "KEY BASE")])
+row(p, 460, 820, 304, [("knob", "filter_balance", "FILTER BALANCE")])
+row(p, 800, 1210, 244, [("popup", "filter_routing", "ROUTING", 180), ("knob", "filter_keytrack_base", "KEY BASE")])
 row(p, 800, 1210, 366, [("popup", "saturation_curve", "SATURATION", 180), ("toggle", "filter1_env_polarity", "ENV 1 POL")])
-row(p, 20, 1260, 524, [("knob", "cutoff2_offset", "CUTOFF 2"), ("knob", "filter2_resonance", "RESONANCE 2"), ("knob", "filter2_env_amt", "ENV 2 AMT"),
+row(p, 20, 1260, 520, [("knob", "cutoff2_offset", "CUTOFF 2"), ("knob", "filter2_resonance", "RESONANCE 2"), ("knob", "filter2_env_amt", "ENV 2 AMT"),
                        ("knob", "filter2_keyfollow", "KEYTRACK 2"), ("knob", "resonance2_velocity", "RES 2 VEL"), ("knob", "flt2_envamt_velocity", "ENV 2 VEL")])
 p.done()
 
@@ -297,10 +298,6 @@ row(p, 20, 1260, 442, [("knob", "amp_attack", "ATTACK"), ("knob", "amp_decay", "
 p.done()
 
 # ---------------------------------------------------------------- LFO 1 + 2
-def lfo_page(name, n, dest_cells, extra_q):
-    pass
-
-
 p = Page("LFO 1+2", ["lfo1_rate", "lfo1_keyfollow", "lfo1_symmetry", "lfo1_keytrigger", "osc1_lfo1_amount", "osc2_lfo1_amount", "pw_lfo1_amount", "reso_lfo1_amount",
                      "lfo2_rate", "lfo2_keyfollow", "lfo2_symmetry", "lfo2_keytrigger", "cutoff1_lfo2_amount", "cutoff2_lfo2_amount", "shape_lfo2_amount", "fm_lfo2_amount"])
 p.panel(8, 8, 1264, 304, "LFO 1", "osc")
@@ -330,60 +327,65 @@ p.done()
 p = Page("MOD", ["assign1_amount", "-", "-", "-", "assign2_amount1", "assign2_amount2", "-", "-", "assign3_amount1", "assign3_amount2", "assign3_amount3", "-"])
 
 
-def slot(page, x, w, n, dests, top=8, h=None):
+def slot(page, x, w, n, dests, top=8):
     """a modulation slot: its source popup, then one row per destination (amount knob and destination popup)"""
-    page.panel(x, top, w, h or (44 + 62 + 100 * len(dests) + 14), "SLOT %d" % n, "mixer")
+    page.panel(x, top, w, 44 + 62 + 112 * len(dests) + 12, "SLOT %d" % n, "mixer")
     page.popup(x + w // 2, top + 74, "assign%d_source" % n, "SOURCE", w - 40, 34)
     for i, (dk, ak) in enumerate(dests):
-        cy = top + 150 + 100 * i
+        cy = top + 150 + 112 * i
         page.knob(x + 66, cy, ak, "AMOUNT")
         page.popup(x + 66 + (w - 66) // 2 + 20, cy - 8, dk, "DESTINATION", w - 150, 34)
 
 
 slot(p, 8, 414, 1, [("assign1_destination", "assign1_amount")])
 slot(p, 432, 414, 2, [("assign2_dest1", "assign2_amount1"), ("assign2_dest2", "assign2_amount2")])
-slot(p, 856, 416, 3, [("assign3_dest1", "assign3_amount1"), ("assign3_dest2", "assign3_amount2"), ("assign3_dest3", "assign3_amount3")], h=420)
+slot(p, 856, 416, 3, [("assign3_dest1", "assign3_amount1"), ("assign3_dest2", "assign3_amount2"), ("assign3_dest3", "assign3_amount3")])
 # slots 4-6 exist on a Virus B or C only: a separate layer shown while rom_bc is Yes
-with p.layer((0, 436, 1280, 628), "rom_bc:Yes"):
-    p.panel(8, 436, 1264, 184, "SLOTS 4 - 6 (VIRUS B / C)", "mixer")
+with p.layer((0, 468, 1280, 628), "rom_bc:Yes"):
+    p.panel(8, 468, 1264, 152, "SLOTS 4 - 6 (VIRUS B / C)", "mixer")
     for i, n in enumerate((4, 5, 6)):
         x0 = 16 + i * 420
-        p.popup(x0 + 120, 508, "assign%d_source" % n, "SOURCE %d" % n, 200, 34)
-        p.popup(x0 + 120, 574, "assign%d_destination" % n, "DESTINATION", 200, 34)
-        p.knob(x0 + 330, 540, "assign%d_amount" % n, "AMOUNT")
+        p.popup(x0 + 90, 548, "assign%d_source" % n, "SOURCE %d" % n, 150, 34)
+        p.popup(x0 + 250, 548, "assign%d_destination" % n, "DESTINATION", 150, 34)
+        p.knob(x0 + 370, 548, "assign%d_amount" % n, "AMOUNT")
 p.done()
 
-# ---------------------------------------------------------------- FX
-p = Page("FX", ["distortion_intensity", "bass_intensity", "bass_tune", "punch_intensity", "phaser_rate", "phaser_frequency", "phaser_depth", "phaser_feedback",
-                "chorus_rate", "chorus_depth", "chorus_feedback", "chorus_delay", "low_eq_gain", "mid_eq_gain", "high_eq_gain", "mid_eq_q"])
-p.panel(8, 8, 440, 138, "DISTORTION", "dist")
-row(p, 16, 448, 84, [("popup", "distortion_curve", "CURVE", 130), ("knob", "distortion_intensity", "INTENSITY")])
-p.panel(456, 8, 420, 138, "ANALOG BOOST", "analog")
-row(p, 464, 876, 84, [("knob", "bass_intensity", "BOOST"), ("knob", "bass_tune", "TUNE")])
-p.panel(884, 8, 388, 138, "PUNCH", "punch")
-row(p, 892, 1264, 84, [("knob", "punch_intensity", "AMOUNT")])
-p.panel(8, 154, 1264, 138, "PHASER", "phaser")
-row(p, 16, 1264, 230, [("popup", "phaser_mode", "STAGES", 130), ("knob", "phaser_rate", "RATE"), ("knob", "phaser_frequency", "FREQUENCY"), ("knob", "phaser_depth", "DEPTH"),
+# ---------------------------------------------------------------- FX 1
+p = Page("FX 1", ["distortion_intensity", "bass_intensity", "bass_tune", "punch_intensity", "phaser_rate", "phaser_frequency", "phaser_depth", "phaser_feedback",
+                  "chorus_rate", "chorus_depth", "chorus_feedback", "chorus_delay", "phaser_spread", "phaser_mix", "chorus_mix", "-"])
+p.panel(8, 8, 440, 158, "DISTORTION", "dist")
+row(p, 16, 448, 82, [("popup", "distortion_curve", "CURVE", 130), ("knob", "distortion_intensity", "INTENSITY")])
+p.panel(456, 8, 420, 158, "ANALOG BOOST", "analog")
+row(p, 464, 876, 82, [("knob", "bass_intensity", "BOOST"), ("knob", "bass_tune", "TUNE")])
+p.panel(884, 8, 388, 158, "PUNCH", "punch")
+row(p, 892, 1264, 82, [("knob", "punch_intensity", "AMOUNT")])
+p.panel(8, 174, 1264, 158, "PHASER", "phaser")
+row(p, 16, 1264, 248, [("popup", "phaser_mode", "STAGES", 130), ("knob", "phaser_rate", "RATE"), ("knob", "phaser_frequency", "FREQUENCY"), ("knob", "phaser_depth", "DEPTH"),
                        ("knob", "phaser_feedback", "FEEDBACK"), ("knob", "phaser_spread", "SPREAD"), ("knob", "phaser_mix", "MIX")])
-p.panel(8, 300, 1264, 138, "CHORUS", "chorus")
-row(p, 16, 1264, 376, [("popup", "chorus_lfo_shape", "LFO SHAPE", 130), ("knob", "chorus_rate", "RATE"), ("knob", "chorus_depth", "DEPTH"), ("knob", "chorus_feedback", "FEEDBACK"),
+p.panel(8, 340, 1264, 158, "CHORUS", "chorus")
+row(p, 16, 1264, 414, [("popup", "chorus_lfo_shape", "LFO SHAPE", 130), ("knob", "chorus_rate", "RATE"), ("knob", "chorus_depth", "DEPTH"), ("knob", "chorus_feedback", "FEEDBACK"),
                        ("knob", "chorus_delay", "DELAY"), ("knob", "chorus_mix", "MIX")])
-p.panel(8, 446, 1264, 174, "EQUALIZER", "eq")
-row(p, 16, 1264, 520, [("knob", "low_eq_gain", "LOW GAIN"), ("knob", "low_eq_freq", "LOW FREQ"), ("knob", "mid_eq_gain", "MID GAIN"), ("knob", "mid_eq_freq", "MID FREQ"),
-                       ("knob", "mid_eq_q", "MID Q"), ("knob", "high_eq_gain", "HIGH GAIN"), ("knob", "high_eq_freq", "HIGH FREQ")])
 p.done()
 
-# ---------------------------------------------------------------- DELAY / VELOCITY
-p = Page("DELAY / VELOCITY", ["delay_time", "delay_feedback", "delay_color", "delay_rate_rev_decay", "delay_depth", "effect_send", "-", "-",
-                              "osc1_shape_velocity", "flt1_envamt_velocity", "resonance1_velocity", "pulsewidth_velocity", "amp_velocity", "panorama_velocity", "osc2_shape_velocity", "flt2_envamt_velocity"])
-p.panel(8, 8, 1264, 296, "DELAY / REVERB", "delay")
-row(p, 16, 1264, 84, [("popup", "delay_reverb_mode", "FX MODE", 140), ("knob", "effect_send", "SEND"), ("knob", "delay_time", "TIME"), ("knob", "delay_feedback", "FEEDBACK"),
-                      ("knob", "delay_color", "COLOR"), ("knob", "delay_rate_rev_decay", "RATE / DECAY"), ("knob", "delay_depth", "DEPTH")])
-row(p, 16, 1264, 204, [("popup", "delay_clock", "CLOCK", 140), ("popup", "delay_lfo_shape", "LFO SHAPE", 140)])
-p.panel(8, 312, 1264, 308, "VELOCITY AMOUNTS", "velo")
-row(p, 16, 1264, 388, [("knob", "osc1_shape_velocity", "OSC 1 SHAPE"), ("knob", "flt1_envamt_velocity", "FLT 1 ENV"), ("knob", "resonance1_velocity", "FLT 1 RES"),
+# ---------------------------------------------------------------- FX 2
+p = Page("FX 2", ["low_eq_gain", "low_eq_freq", "mid_eq_gain", "mid_eq_freq", "mid_eq_q", "high_eq_gain", "high_eq_freq", "-",
+                  "delay_time", "delay_feedback", "delay_color", "delay_rate_rev_decay", "delay_depth", "effect_send", "-", "-"])
+p.panel(8, 8, 1264, 158, "EQUALIZER", "eq")
+row(p, 16, 1264, 82, [("knob", "low_eq_gain", "LOW GAIN"), ("knob", "low_eq_freq", "LOW FREQ"), ("knob", "mid_eq_gain", "MID GAIN"), ("knob", "mid_eq_freq", "MID FREQ"),
+                      ("knob", "mid_eq_q", "MID Q"), ("knob", "high_eq_gain", "HIGH GAIN"), ("knob", "high_eq_freq", "HIGH FREQ")])
+p.panel(8, 174, 1264, 282, "DELAY / REVERB", "delay")
+row(p, 16, 1264, 248, [("popup", "delay_reverb_mode", "FX MODE", 140), ("knob", "effect_send", "SEND"), ("knob", "delay_time", "TIME"), ("knob", "delay_feedback", "FEEDBACK"),
+                       ("knob", "delay_color", "COLOR"), ("knob", "delay_rate_rev_decay", "RATE / DECAY"), ("knob", "delay_depth", "DEPTH")])
+row(p, 16, 1264, 364, [("popup", "delay_clock", "CLOCK", 140), ("popup", "delay_lfo_shape", "LFO SHAPE", 140)])
+p.done()
+
+# ---------------------------------------------------------------- VELOCITY
+p = Page("VELOCITY", ["osc1_shape_velocity", "flt1_envamt_velocity", "resonance1_velocity", "pulsewidth_velocity", "amp_velocity", "panorama_velocity", "-", "-",
+                      "osc2_shape_velocity", "flt2_envamt_velocity", "resonance2_velocity", "fm_amount_velocity"])
+p.panel(8, 8, 1264, 612, "VELOCITY AMOUNTS", "velo")
+row(p, 16, 1264, 170, [("knob", "osc1_shape_velocity", "OSC 1 SHAPE"), ("knob", "flt1_envamt_velocity", "FLT 1 ENV"), ("knob", "resonance1_velocity", "FLT 1 RES"),
                        ("knob", "pulsewidth_velocity", "PULSEWIDTH"), ("knob", "amp_velocity", "VOLUME"), ("knob", "panorama_velocity", "PANORAMA")])
-row(p, 16, 1264, 512, [("knob", "osc2_shape_velocity", "OSC 2 SHAPE"), ("knob", "flt2_envamt_velocity", "FLT 2 ENV"), ("knob", "resonance2_velocity", "FLT 2 RES"),
+row(p, 16, 1264, 400, [("knob", "osc2_shape_velocity", "OSC 2 SHAPE"), ("knob", "flt2_envamt_velocity", "FLT 2 ENV"), ("knob", "resonance2_velocity", "FLT 2 RES"),
                        ("knob", "fm_amount_velocity", "FM AMOUNT")])
 p.done()
 
