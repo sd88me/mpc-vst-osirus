@@ -202,13 +202,23 @@ def row(page, x0, x1, y, items, label_y=None):
 
 # ---------------------------------------------------------------- PLAY
 def header(page):
-    """the OSIRUS title bar of Galaxpel's main background (logo and display bar), with the preset and bank steppers over its display"""
-    bar = Image.open(os.path.join(ROOT, "skin", "galaxpel", "main_bg.png")).convert("RGB").crop((40, 50, 1600, 195))
-    bar = bar.resize((1248, int(bar.height * 1248 / bar.width)), Image.LANCZOS)
-    page.im.paste(bar, (16, 6))
+    """our own title bar: Galaxpel's OSIRUS wordmark (skin/parts/wordmark.png, cut from its main background) and a display bezel with its blue glow,
+    holding the bank and preset steppers"""
+    d = page.d
+    page.panel(8, 6, 1264, 118, "")
+    wm = Image.open(os.path.join(PARTS, "wordmark.png")).convert("RGBA")
+    wm = wm.resize((int(wm.width * 0.72), int(wm.height * 0.72)), Image.LANCZOS)
+    page.im.paste(wm, (34, 12), wm)
+    d.rounded_rectangle((372, 16, 1256, 114), 8, fill=(22, 25, 33), outline=(15, 17, 23), width=3)       # the bezel
+    d.rounded_rectangle((376, 20, 1252, 110), 6, outline=(70, 78, 98), width=1)
+    for i in range(160):                                                                                   # Galaxpel's blue glow along the top edge
+        a = int(150 * (1 - abs(i - 80) / 80))
+        d.line((572 + i * 3, 19, 572 + i * 3 + 3, 19), fill=(60 + a // 4, 100 + a // 2, 200 + a // 4))
+    page.text(404, 20, "BANK", 20, INK_DIM)
+    page.text(764, 20, "PRESET", 20, INK_DIM)
     # the preset stepper comes first: the data wheel acts on the first focusable control
-    page.widgets.append('stepper w=440 h=44 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (1020, 6 + 62 + Y86))
-    page.widgets.append('stepper w=232 h=44 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (686, 6 + 62 + Y86))
+    page.widgets.append('stepper w=500 h=44 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (1000, 78 + Y86))
+    page.widgets.append('stepper w=300 h=44 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (550, 78 + Y86))
 
 
 p = Page("PLAY", ["preset", "bank_index", "-", "-", "patch_volume", "panorama", "transpose", "-", "gain", "dsp_clock", "octave_transpose", "rom_index",
@@ -240,7 +250,7 @@ p.done()
 
 # ---------------------------------------------------------------- OSC
 p = Page("OSC", ["osc1_shape", "osc1_pulsewidth", "osc1_semitone", "osc1_keyfollow", "osc2_shape", "osc2_pulsewidth", "osc2_semitone", "osc2_keyfollow",
-                  "osc2_detune", "osc2_fm_amount", "osc2_filt_env_amt", "fm_filt_env_amt", "osc_balance", "osc_mainvolume", "noise_volume", "ringmod_volume"])
+                  "osc2_detune", "osc2_fm_amount", "osc2_filt_env_amt", "fm_filt_env_amt", "osc3_semitone", "osc3_detune", "osc3_volume", "-"])
 p.panel(8, 8, 704, 138, "OSC 1", "osc")
 row(p, 20, 700, 84, [("popup", "osc1_wave_select", "WAVE", 150), ("knob", "osc1_shape", "SHAPE"), ("knob", "osc1_pulsewidth", "PULSEWIDTH"),
                      ("knob", "osc1_semitone", "SEMITONE"), ("knob", "osc1_keyfollow", "KEY FOLLOW")])
@@ -250,13 +260,13 @@ row(p, 20, 700, 230, [("popup", "osc2_wave_select", "WAVE", 150), ("knob", "osc2
 p.inset(16, 282, 688, 114)
 row(p, 20, 700, 332, [("popup", "osc_fm_mode", "FM MODE", 150), ("knob", "osc2_fm_amount", "FM AMOUNT"), ("knob", "osc2_detune", "DETUNE"),
                       ("knob", "osc2_filt_env_amt", "ENV OSC2"), ("knob", "fm_filt_env_amt", "ENV FM")])
-p.panel(8, 412, 704, 208, "SYNC / SUB / PORTAMENTO", "sub")
-row(p, 20, 700, 492, [("toggle", "osc2_sync", "OSC 2 SYNC"), ("toggle", "sub_osc_shape", "SUB WAVE"), ("knob", "sub_osc_volume", "SUB LEVEL"), ("knob", "portamento_time", "PORTAMENTO")])
+p.panel(8, 412, 704, 208, "OSC 3", "osc")
+row(p, 20, 700, 504, [("popup", "osc3_mode", "OSC 3 MODE", 150), ("knob", "osc3_semitone", "SEMITONE"), ("knob", "osc3_detune", "DETUNE"), ("knob", "osc3_volume", "LEVEL")])
 p.panel(722, 8, 550, 240, "MIXER", "mixer")
 row(p, 730, 1264, 78, [("knob", "osc_balance", "OSC BALANCE"), ("knob", "osc_mainvolume", "OSC LEVEL"), ("knob", "noise_color", "NOISE COLOR")])
 row(p, 730, 1264, 182, [("knob", "noise_volume", "NOISE"), ("knob", "ringmod_volume", "RING MOD"), None])
-p.panel(722, 256, 550, 168, "OSC 3", "osc")
-row(p, 730, 1264, 336, [("popup", "osc3_mode", "MODE", 130), ("knob", "osc3_semitone", "SEMITONE"), ("knob", "osc3_detune", "DETUNE"), ("knob", "osc3_volume", "LEVEL")])
+p.panel(722, 256, 550, 168, "SYNC / SUB / PORTAMENTO", "sub")
+row(p, 730, 1264, 336, [("toggle", "osc2_sync", "OSC 2 SYNC"), ("toggle", "sub_osc_shape", "SUB WAVE"), ("knob", "sub_osc_volume", "SUB LEVEL"), ("knob", "portamento_time", "PORTAMENTO")])
 p.panel(722, 432, 550, 188, "UNISON", "unison")
 row(p, 730, 1264, 524, [("popup", "unison_mode", "VOICES", 100), ("knob", "unison_detune", "DETUNE"), ("knob", "unison_pan_spread", "PAN SPREAD"),
                         ("knob", "unison_lfo_phase", "LFO PHASE"), ("knob", "osc_init_phase", "PHASE INIT")])
