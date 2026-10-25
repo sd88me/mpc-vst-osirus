@@ -99,8 +99,8 @@ class Page:
     def knob(self, cx, cy, key, label=None, qlink=True):
         self.im.paste(SOCKET, (cx - SOCK // 2, cy - SOCK // 2), SOCKET)
         self.label(cx, cy + SOCK // 2 - 2, label or PARAMS[key]["name"].upper(), INK, 18)
-        # the live value goes under the baked label (vy=): vs=15 px text, 22 px below the knob's own value row
-        self.widgets.append('knob cx=%d cy=%d r=%d label="" key=%s ns=0 vs=15 vy=22 bw=%d' % (cx, cy + Y86, SOCK // 2 - 6, key, SOCK + 24))
+        # the live value goes under the baked label (vy=): vs=22 px text, 22 px below the knob's own value row
+        self.widgets.append('knob cx=%d cy=%d r=%d label="" key=%s ns=0 vs=22 vy=22 bw=%d' % (cx, cy + Y86, SOCK // 2 - 6, key, SOCK + 24))
 
     def popup(self, cx, cy, key, label, w=150, h=34):
         self.label(cx, cy + h // 2 + 2, label, INK_DIM, 19)

@@ -1,0 +1,1 @@
+Optional: SysEx bank dumps (.mid) of your own Virus patches. Each file appears as an extra bank after the ROM's own banks.

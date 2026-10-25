@@ -4,8 +4,10 @@ An emulation of the Access Virus A, B and C synthesizers as a native VST2 instru
 and kin: aarch64, MPC OS 3.x), with a touchscreen skin and Q-Link control on every page. It runs the original Virus firmware on
 [gearmulator](https://github.com/dsp56300/gearmulator)'s DSP56300 emulator ("Osirus" is gearmulator's name for its Virus emulation).
 
-**Status: development build.** Tested on an MPC Live III (MPC OS 3.9.1) with Virus A and C ROMs; sound, skin, banks, presets and Q-Links
-work. Virus B at the default clock is untested. Gen1 devices and the Force are not supported (the emulator's JIT has no 32-bit ARM backend).
+![The OSC page on an MPC Live III](docs/screenshots/osirus-osc.png)
+
+**Status: early release.** Tested on an MPC Live III (MPC OS 3.9.1) with Virus A and C ROMs: sound, skin, banks, presets, Q-Links and knob values work.
+Virus B is untested. Gen1 devices and the Force are not supported (the emulator's JIT has no 32-bit ARM backend).
 
 *Osirus is an independent project, not affiliated with or endorsed by Access Music. "Virus" is the name of the instrument it emulates.*
 
@@ -20,17 +22,21 @@ SysEx `.mid` dumps in `osirus/banks/` show up as banks after the ROM's own.
 ## Using it
 Add *Osirus* to a plugin track. Pages (tabs at the bottom): **PLAY** (title bar with the preset and bank steppers, Patch Settings,
 engine status and an INIT PATCH button, output controls), **BANKS** (bank list and the patches of the current bank, 30 per page),
-**OSC** (oscillators 1-3, mixer, ring mod, sub, unison, portamento on one page), **FILTER**, **LFO 1+2**, **LFO 3 / ARP**, **MOD** (slots 4-6 appear on a Virus B or C only), **FX 1**, **FX 2**, **VELOCITY**.
-Every four Q-Links form a column that MPC outlines on the page. The data wheel steps the preset.
+**OSC** (oscillators 1-3, mixer, ring mod, sub, unison, portamento), **FILTER**, **ENV**, **LFO 1+2**, **LFO 3 / ARP**, **MOD** (slots 4-6 appear on a Virus B or C only), **FX 1** (distortion, analog boost, punch, phaser, chorus), **FX 2** (equalizer, delay and reverb), **VELOCITY**.
+Every four Q-Links form a column that MPC outlines on the page; every knob shows its value under its label. The data wheel steps the preset.
 MPC's PRESET menu has `INIT` (the ROM's own "- Init -" single) and `Default`.
 
 **DSP CLOCK %** (PLAY page) is how fast the emulated DSP runs: 100 is the real instrument's speed. Lower it only if the CPU can't keep up
 (the STATS readout shows dropouts and the emulator's CPU). On an MPC Live III a Virus C at 100% uses about half of one fast core.
 
 ## Install
-Download `Osirus-<version>-mpc-aarch64.zip` from a release, unzip it, copy the folder to the device and run `sh install.sh` as root
-(it stops and restarts MPC and backs up `MPC.settings`; on a Live III use `-t /nvme/Synths`, see the zip's INSTALL.md), or use the MPC
-plugin catalog's installer. Then add your ROM to `osirus/roms/`.
+Use the [MPC plugin catalog](https://sd88me.github.io/mpc-vst-plugins/) (its installer or `mpc-store.sh`), or download `Osirus-<version>-mpc-aarch64.zip` from
+[Releases](https://github.com/sd88me/mpc-vst-osirus/releases), unzip it, copy the folder to the device and run `sh install.sh` as root: it stops and
+restarts MPC and backs up `MPC.settings`. On a Live III the writable drive is `/nvme/Synths` (`sh install.sh -t /nvme/Synths`); the zip's INSTALL.md has the details.
+Then put your ROM in the plugin folder's `osirus/roms/` and add Osirus to a plugin track. The release has no ROM in it.
+
+![PLAY](docs/screenshots/osirus-play.png)
+![BANKS](docs/screenshots/osirus-banks.png)
 
 ## Building
 Needs Docker, Python 3 with Pillow, and a checkout of [mpc-vst-plugins](https://github.com/sd88me/mpc-vst-plugins) (`MPC_VST`, default
@@ -40,7 +46,8 @@ Needs Docker, Python 3 with Pillow, and a checkout of [mpc-vst-plugins](https://
 ./build.sh all       # aarch64 vst/build/aarch64/osirus.so + the skin (cross compiled in Docker)
 tools/preview.sh X   # draw every skin page offline into vst/preview/X/
 ```
-Release zip: `tools/release.py` from mpc-vst-plugins (see `docs/DEVELOPMENT.md`). `test/engine_test.cpp` boots a ROM from
+Release zip (no ROM, checked against the catalog rules): `./release.sh <version>`; then `gh release create v<version> dist/Osirus-<version>-mpc-aarch64.zip`.
+Building needs mpc-vst-plugins with the skin tool's `vy=` option (its main branch once PR #550 is merged). `test/engine_test.cpp` boots a ROM from
 `<dir>/roms/` and checks notes, presets, banks, tiles and saved state: `build/x86/osirus_engine_test <dir> [seconds]`.
 
 ## How it is put together
