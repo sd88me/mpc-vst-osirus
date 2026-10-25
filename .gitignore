@@ -12,3 +12,7 @@ __pycache__/
 *.mid
 roms/
 vst/mock/
+vst/custom/build/
+vst/custom/preview/
+vst/custom/images/
+
