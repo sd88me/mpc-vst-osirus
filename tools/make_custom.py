@@ -12,7 +12,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.join(HERE, "..")
-OUT = os.path.join(ROOT, "vst", "custom")
+INSTALL = "--install" in __import__("sys").argv       # write the plugin's real layout (vst/layout.conf, vst/images/page_*.png)
+OUT = os.path.join(ROOT, "vst") if INSTALL else os.path.join(ROOT, "vst", "custom")
 PARTS = os.path.join(ROOT, "skin", "parts")
 FONT = os.path.join(ROOT, "vst", "fonts")
 Y86 = 86
@@ -30,10 +31,11 @@ INSET = (46, 51, 64)
 SOCK = 84                   # knob socket size on screen: 104 px art scaled down
 
 os.makedirs(os.path.join(OUT, "images"), exist_ok=True)
-for f in ("params.json", "skin.css"):
-    shutil.copy(os.path.join(ROOT, "vst", f), OUT)
-shutil.copytree(FONT, os.path.join(OUT, "fonts"), dirs_exist_ok=True)
-shutil.copy(os.path.join(ROOT, "vst", "images", "knob_galaxpel.png"), os.path.join(OUT, "images"))
+if not INSTALL:
+    for f in ("params.json", "skin.css"):
+        shutil.copy(os.path.join(ROOT, "vst", f), OUT)
+    shutil.copytree(FONT, os.path.join(OUT, "fonts"), dirs_exist_ok=True)
+    shutil.copy(os.path.join(ROOT, "vst", "images", "knob_galaxpel.png"), os.path.join(OUT, "images"))
 PARAMS = {p["key"]: p for p in json.load(open(os.path.join(OUT, "params.json")))["params"]}
 
 F = lambda size, bold=False: ImageFont.truetype(os.path.join(FONT, "BebasNeue-%s.ttf" % ("Bold" if bold else "Regular")), size)
@@ -107,8 +109,35 @@ class Page:
         self.label(cx, cy + 18, label, INK, 19)
         self.widgets.append('toggle cx=%d cy=%d label="" key=%s ns=0' % (cx, cy + Y86, key))
 
-    def when(self, cond):
-        self.widgets[-1] += " when=" + cond
+    def readout(self, cx, cy, key, label, w=300, h=34):
+        self.label(cx, cy - h // 2 - 22, label, INK_DIM, 19)
+        self.widgets.append('readout cx=%d cy=%d w=%d h=%d label="" key=%s' % (cx, cy + Y86, w, h, key))
+
+    def button(self, cx, cy, key, label, w=130, h=40):
+        self.widgets.append('button cx=%d cy=%d label="%s" key=%s' % (cx, cy + Y86, label, key))
+
+    def layer(self, rect, cond):
+        """Context manager: what is drawn inside is a separate image shown only while <cond> (when=<param>:<option>)."""
+        page = self
+
+        class _L:
+            def __enter__(s_):
+                s_.saved = (page.im, page.d, page.widgets)
+                page.im = page.im.copy()
+                page.d = ImageDraw.Draw(page.im)
+                page.widgets = []
+                return page
+
+            def __exit__(s_, *a):
+                im, wid = page.im, page.widgets
+                page.im, page.d, page.widgets = s_.saved
+                x0, y0, x1, y1 = rect
+                page.n_layers = getattr(page, "n_layers", 0) + 1
+                fn = "images/page_%s_L%d.png" % (page.name.replace(" ", "_").replace("/", "_"), page.n_layers)
+                im.crop(rect).save(os.path.join(OUT, fn))
+                page.widgets.append('art x=%d y=%d w=%d h=%d file="%s" when=%s' % (x0, y0 + Y86, x1 - x0, y1 - y0, fn, cond))
+                page.widgets.extend(w + " when=" + cond for w in wid)
+        return _L()
 
     def done(self):
         fn = "images/page_%s.png" % self.name.replace(" ", "_").replace("/", "_")
@@ -165,7 +194,49 @@ def row(page, x0, x1, y, items, label_y=None):
             page.popup(cx, y, it[1], it[2], it[3] if len(it) > 3 else int(min(cw - 14, 170)))
         elif it[0] == "toggle":
             page.toggle(cx, y, it[1], it[2])
+        elif it[0] == "readout":
+            page.readout(cx, y, it[1], it[2], it[3] if len(it) > 3 else int(cw - 20))
+        elif it[0] == "button":
+            page.button(cx, y, it[1], it[2])
 
+
+# ---------------------------------------------------------------- PLAY
+def header(page):
+    """the OSIRUS title bar of Galaxpel's main background (logo and display bar), with the preset and bank steppers over its display"""
+    bar = Image.open(os.path.join(ROOT, "skin", "galaxpel", "main_bg.png")).convert("RGB").crop((40, 50, 1600, 195))
+    bar = bar.resize((1248, int(bar.height * 1248 / bar.width)), Image.LANCZOS)
+    page.im.paste(bar, (16, 6))
+    # the preset stepper comes first: the data wheel acts on the first focusable control
+    page.widgets.append('stepper w=440 h=44 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (1020, 6 + 62 + Y86))
+    page.widgets.append('stepper w=232 h=44 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (686, 6 + 62 + Y86))
+
+
+p = Page("PLAY", ["preset", "bank_index", "-", "-", "patch_volume", "panorama", "transpose", "-", "gain", "dsp_clock", "octave_transpose", "rom_index",
+                  "bender_range_up", "bender_range_down", "-", "-"])
+header(p)
+p.panel(8, 132, 520, 214, "PATCH SETTINGS", "patch")
+row(p, 16, 520, 214, [("popup", "key_mode", "KEY MODE", 130), ("knob", "patch_volume", "PATCH VOLUME"), ("knob", "panorama", "PANNING"), ("knob", "transpose", "TRANSPOSE")])
+p.panel(536, 132, 736, 214, "ENGINE", None)
+p.readout(904, 205, "rom_name", "ROM", 704)
+p.readout(722, 262, "loading_status", "STATUS", 340)
+p.readout(1088, 262, "engine_stats", "STATS", 340)
+p.button(722, 318, "all_notes_off", "PANIC")
+p.button(1088, 318, "init_patch", "INIT PATCH")
+p.panel(8, 354, 1264, 266, "OUTPUT", None)
+row(p, 16, 1264, 450, [("knob", "gain", "GAIN %"), ("knob", "dsp_clock", "DSP CLOCK %"), ("knob", "octave_transpose", "OCTAVE"), ("knob", "rom_index", "ROM NUMBER"),
+                       ("knob", "bender_range_up", "BEND UP"), ("knob", "bender_range_down", "BEND DOWN")])
+p.done()
+
+# ---------------------------------------------------------------- BANKS
+p = Page("BANKS", ["preset", "bank_index", "patch_page_prev", "patch_page_next"])
+p.widgets.append('stepper w=560 h=44 cx=520 cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (30 + Y86))
+p.widgets.append('stepper w=250 h=44 cx=150 cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (30 + Y86))
+p.widgets.append('stepper w=240 h=44 cx=1120 cy=%d label="" key=patch_page_text get=patch_page_text prev=patch_page_prev next=patch_page_next style=dotmatrix' % (30 + Y86))
+p.panel(8, 62, 262, 558, "BANKS", "patch")
+p.widgets.append('list x=22 y=%d w=236 h=486 cols=1 rows=16 gap=4 th=27 key=bank_slot' % (112 + Y86))
+p.panel(278, 62, 994, 558, "PATCHES", "patch")
+p.widgets.append('list x=292 y=%d w=966 h=486 cols=3 rows=10 gap=6 th=41 key=patch_slot order=cols' % (112 + Y86))
+p.done()
 
 # ---------------------------------------------------------------- OSC
 p = Page("OSC", ["osc1_shape", "osc1_pulsewidth", "osc1_semitone", "osc1_keyfollow", "osc2_shape", "osc2_pulsewidth", "osc2_semitone", "osc2_keyfollow",
@@ -215,10 +286,102 @@ p.panel(8, 320, 1264, 300, "AMP ENV", "env")
 row(p, 20, 1260, 442, [("knob", "amp_attack", "ATTACK"), ("knob", "amp_decay", "DECAY"), ("knob", "amp_sustain", "SUSTAIN"), ("knob", "amp_sustain_time", "TIME"), ("knob", "amp_release", "RELEASE")])
 p.done()
 
+# ---------------------------------------------------------------- LFO 1 + 2
+def lfo_page(name, n, dest_cells, extra_q):
+    pass
+
+
+p = Page("LFO 1+2", ["lfo1_rate", "lfo1_keyfollow", "lfo1_symmetry", "lfo1_keytrigger", "osc1_lfo1_amount", "osc2_lfo1_amount", "pw_lfo1_amount", "reso_lfo1_amount",
+                     "lfo2_rate", "lfo2_keyfollow", "lfo2_symmetry", "lfo2_keytrigger", "cutoff1_lfo2_amount", "cutoff2_lfo2_amount", "shape_lfo2_amount", "fm_lfo2_amount"])
+p.panel(8, 8, 1264, 304, "LFO 1", "osc")
+row(p, 16, 1264, 84, [("popup", "lfo1_shape", "SHAPE", 140), ("knob", "lfo1_rate", "RATE"), ("knob", "lfo1_keyfollow", "KEYTRACK"), ("knob", "lfo1_symmetry", "CONTOUR"),
+                      ("knob", "lfo1_keytrigger", "PHASE"), ("knob", "osc1_lfo1_amount", "OSC 1 PITCH"), ("knob", "osc2_lfo1_amount", "OSC 2 PITCH"), ("knob", "pw_lfo1_amount", "PW 1+2")])
+row(p, 16, 1264, 204, [("popup", "lfo1_clock", "CLOCK", 140), ("toggle", "lfo1_mode", "POLY / MONO"), ("toggle", "lfo1_env_mode", "ENV MODE"), ("knob", "reso_lfo1_amount", "RESO 1+2"),
+                       ("knob", "filtgain_lfo1_amount", "FILTER GAIN"), ("knob", "lfo1_assign_amount", "ASSIGN AMOUNT"), ("popup", "lfo1_assign_dest", "ASSIGN DESTINATION", 140), None])
+p.panel(8, 320, 1264, 300, "LFO 2", "osc")
+row(p, 16, 1264, 396, [("popup", "lfo2_shape", "SHAPE", 140), ("knob", "lfo2_rate", "RATE"), ("knob", "lfo2_keyfollow", "KEYTRACK"), ("knob", "lfo2_symmetry", "CONTOUR"),
+                       ("knob", "lfo2_keytrigger", "PHASE"), ("knob", "cutoff1_lfo2_amount", "F1 CUTOFF"), ("knob", "cutoff2_lfo2_amount", "F2 CUTOFF"), ("knob", "shape_lfo2_amount", "SHAPE 1+2")])
+row(p, 16, 1264, 514, [("popup", "lfo2_clock", "CLOCK", 140), ("toggle", "lfo2_mode", "POLY / MONO"), ("toggle", "lfo2_env_mode", "ENV MODE"), ("knob", "fm_lfo2_amount", "FM AMOUNT"),
+                       ("knob", "pan_lfo2_amount", "PANNING"), ("knob", "lfo2_assign_amount", "ASSIGN AMOUNT"), ("popup", "lfo2_assign_dest", "ASSIGN DESTINATION", 140), None])
+p.done()
+
+# ---------------------------------------------------------------- LFO 3 / ARP
+p = Page("LFO 3 / ARP", ["lfo3_rate", "lfo3_keyfollow", "lfo3_fadein_time", "osc_lfo3_amount", "arp_pattern", "arp_note_length", "arp_swing", "clock_tempo"])
+p.panel(8, 8, 1264, 290, "LFO 3", "osc")
+row(p, 16, 1264, 84, [("popup", "lfo3_shape", "SHAPE", 140), ("knob", "lfo3_rate", "RATE"), ("knob", "lfo3_keyfollow", "KEYTRACK"), ("knob", "lfo3_fadein_time", "FADE IN"),
+                      ("knob", "osc_lfo3_amount", "AMOUNT"), ("popup", "lfo3_destination", "DESTINATION", 140)])
+row(p, 16, 1264, 204, [("popup", "lfo3_clock", "CLOCK", 140), ("toggle", "lfo3_mode", "POLY / MONO")])
+p.panel(8, 306, 1264, 314, "ARPEGGIATOR", "arp")
+row(p, 16, 1264, 380, [("popup", "arp_mode", "MODE", 140), ("popup", "arp_octave_range", "OCTAVES", 140), ("popup", "arp_clock", "RESOLUTION", 140), ("toggle", "arp_hold", "ARP HOLD")])
+row(p, 16, 1264, 510, [("knob", "arp_pattern", "PATTERN"), ("knob", "arp_note_length", "NOTE LENGTH"), ("knob", "arp_swing", "NOTE SWING"), ("knob", "clock_tempo", "GLOBAL TEMPO")])
+p.done()
+
+# ---------------------------------------------------------------- MOD
+p = Page("MOD", ["assign1_amount", "-", "-", "-", "assign2_amount1", "assign2_amount2", "-", "-", "assign3_amount1", "assign3_amount2", "assign3_amount3", "-"])
+
+
+def slot(page, x, w, n, dests, top=8, h=None):
+    """a modulation slot: its source popup, then one row per destination (amount knob and destination popup)"""
+    page.panel(x, top, w, h or (44 + 62 + 100 * len(dests) + 14), "SLOT %d" % n, "mixer")
+    page.popup(x + w // 2, top + 74, "assign%d_source" % n, "SOURCE", w - 40, 34)
+    for i, (dk, ak) in enumerate(dests):
+        cy = top + 150 + 100 * i
+        page.knob(x + 66, cy, ak, "AMOUNT")
+        page.popup(x + 66 + (w - 66) // 2 + 20, cy - 8, dk, "DESTINATION", w - 150, 34)
+
+
+slot(p, 8, 414, 1, [("assign1_destination", "assign1_amount")])
+slot(p, 432, 414, 2, [("assign2_dest1", "assign2_amount1"), ("assign2_dest2", "assign2_amount2")])
+slot(p, 856, 416, 3, [("assign3_dest1", "assign3_amount1"), ("assign3_dest2", "assign3_amount2"), ("assign3_dest3", "assign3_amount3")], h=420)
+# slots 4-6 exist on a Virus B or C only: a separate layer shown while rom_bc is Yes
+with p.layer((0, 436, 1280, 628), "rom_bc:Yes"):
+    p.panel(8, 436, 1264, 184, "SLOTS 4 - 6 (VIRUS B / C)", "mixer")
+    for i, n in enumerate((4, 5, 6)):
+        x0 = 16 + i * 420
+        p.popup(x0 + 120, 508, "assign%d_source" % n, "SOURCE %d" % n, 200, 34)
+        p.popup(x0 + 120, 574, "assign%d_destination" % n, "DESTINATION", 200, 34)
+        p.knob(x0 + 330, 540, "assign%d_amount" % n, "AMOUNT")
+p.done()
+
+# ---------------------------------------------------------------- FX
+p = Page("FX", ["distortion_intensity", "bass_intensity", "bass_tune", "punch_intensity", "phaser_rate", "phaser_frequency", "phaser_depth", "phaser_feedback",
+                "chorus_rate", "chorus_depth", "chorus_feedback", "chorus_delay", "low_eq_gain", "mid_eq_gain", "high_eq_gain", "mid_eq_q"])
+p.panel(8, 8, 440, 138, "DISTORTION", "dist")
+row(p, 16, 448, 84, [("popup", "distortion_curve", "CURVE", 130), ("knob", "distortion_intensity", "INTENSITY")])
+p.panel(456, 8, 420, 138, "ANALOG BOOST", "analog")
+row(p, 464, 876, 84, [("knob", "bass_intensity", "BOOST"), ("knob", "bass_tune", "TUNE")])
+p.panel(884, 8, 388, 138, "PUNCH", "punch")
+row(p, 892, 1264, 84, [("knob", "punch_intensity", "AMOUNT")])
+p.panel(8, 154, 1264, 138, "PHASER", "phaser")
+row(p, 16, 1264, 230, [("popup", "phaser_mode", "STAGES", 130), ("knob", "phaser_rate", "RATE"), ("knob", "phaser_frequency", "FREQUENCY"), ("knob", "phaser_depth", "DEPTH"),
+                       ("knob", "phaser_feedback", "FEEDBACK"), ("knob", "phaser_spread", "SPREAD"), ("knob", "phaser_mix", "MIX")])
+p.panel(8, 300, 1264, 138, "CHORUS", "chorus")
+row(p, 16, 1264, 376, [("popup", "chorus_lfo_shape", "LFO SHAPE", 130), ("knob", "chorus_rate", "RATE"), ("knob", "chorus_depth", "DEPTH"), ("knob", "chorus_feedback", "FEEDBACK"),
+                       ("knob", "chorus_delay", "DELAY"), ("knob", "chorus_mix", "MIX")])
+p.panel(8, 446, 1264, 174, "EQUALIZER", "eq")
+row(p, 16, 1264, 520, [("knob", "low_eq_gain", "LOW GAIN"), ("knob", "low_eq_freq", "LOW FREQ"), ("knob", "mid_eq_gain", "MID GAIN"), ("knob", "mid_eq_freq", "MID FREQ"),
+                       ("knob", "mid_eq_q", "MID Q"), ("knob", "high_eq_gain", "HIGH GAIN"), ("knob", "high_eq_freq", "HIGH FREQ")])
+p.done()
+
+# ---------------------------------------------------------------- DELAY / VELOCITY
+p = Page("DELAY / VELOCITY", ["delay_time", "delay_feedback", "delay_color", "delay_rate_rev_decay", "delay_depth", "effect_send", "-", "-",
+                              "osc1_shape_velocity", "flt1_envamt_velocity", "resonance1_velocity", "pulsewidth_velocity", "amp_velocity", "panorama_velocity", "osc2_shape_velocity", "flt2_envamt_velocity"])
+p.panel(8, 8, 1264, 296, "DELAY / REVERB", "delay")
+row(p, 16, 1264, 84, [("popup", "delay_reverb_mode", "FX MODE", 140), ("knob", "effect_send", "SEND"), ("knob", "delay_time", "TIME"), ("knob", "delay_feedback", "FEEDBACK"),
+                      ("knob", "delay_color", "COLOR"), ("knob", "delay_rate_rev_decay", "RATE / DECAY"), ("knob", "delay_depth", "DEPTH")])
+row(p, 16, 1264, 204, [("popup", "delay_clock", "CLOCK", 140), ("popup", "delay_lfo_shape", "LFO SHAPE", 140)])
+p.panel(8, 312, 1264, 308, "VELOCITY AMOUNTS", "velo")
+row(p, 16, 1264, 388, [("knob", "osc1_shape_velocity", "OSC 1 SHAPE"), ("knob", "flt1_envamt_velocity", "FLT 1 ENV"), ("knob", "resonance1_velocity", "FLT 1 RES"),
+                       ("knob", "pulsewidth_velocity", "PULSEWIDTH"), ("knob", "amp_velocity", "VOLUME"), ("knob", "panorama_velocity", "PANORAMA")])
+row(p, 16, 1264, 512, [("knob", "osc2_shape_velocity", "OSC 2 SHAPE"), ("knob", "flt2_envamt_velocity", "FLT 2 ENV"), ("knob", "resonance2_velocity", "FLT 2 RES"),
+                       ("knob", "fm_amount_velocity", "FM AMOUNT")])
+p.done()
+
 open(os.path.join(OUT, "layout.conf"), "w").write("\n".join(lines) + "\n")
-v = json.load(open(os.path.join(ROOT, "vst", "vst.json")))
-v.update(name="Osirus Custom", layout="layout.conf", build={"root": "../..", "sources": [], "cflags": [], "libs": ["-lm"]})
-for k in ("tile", "skin_post"):
-    v.pop(k, None)
-json.dump(v, open(os.path.join(OUT, "vst.json"), "w"), indent=2)
+if not INSTALL:
+    v = json.load(open(os.path.join(ROOT, "vst", "vst.json")))
+    v.update(name="Osirus Custom", layout="layout.conf", build={"root": "../..", "sources": [], "cflags": [], "libs": ["-lm"]})
+    for k in ("tile", "skin_post"):
+        v.pop(k, None)
+    json.dump(v, open(os.path.join(OUT, "vst.json"), "w"), indent=2)
 print(OUT)

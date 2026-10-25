@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 MPC_VST="${MPC_VST:-$HOME/mpc-vst-plugins}"
 OUT="vst/preview/${1:-latest}"
 python3 tools/gen_params.py
-python3 tools/make_layout.py
+python3 tools/make_custom.py --install
 docker image inspect mpc-vst-html-art >/dev/null 2>&1 || docker build -q -t mpc-vst-html-art "$MPC_VST/tools/html_art" >/dev/null
 docker run --rm -u "$(id -u):$(id -g)" -e HOME=/tmp -v "$PWD":/w -v "$MPC_VST":/mv:ro -w /w mpc-vst-html-art python3 /mv/tools/gen_vst.py vst/vst.json 2>&1 | grep -v "^warning: skin:" || true
 mkdir -p "$OUT"

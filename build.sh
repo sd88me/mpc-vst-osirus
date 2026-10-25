@@ -41,7 +41,7 @@ engine() {
 
 case "${1:-all}" in
   engine) engine "${2:-aarch64}" ;;
-  test)   python3 tools/gen_params.py; python3 tools/make_layout.py; engine x86; "$MPC_VST/tools/test_port.sh" vst/vst.json ;;
-  all)    python3 tools/gen_params.py; python3 tools/make_layout.py; engine aarch64; "$MPC_VST/tools/build_port.sh" vst/vst.json aarch64 ;;
+  test)   python3 tools/gen_params.py; python3 tools/make_custom.py --install; engine x86; "$MPC_VST/tools/test_port.sh" vst/vst.json ;;
+  all)    python3 tools/gen_params.py; python3 tools/make_custom.py --install; engine aarch64; "$MPC_VST/tools/build_port.sh" vst/vst.json aarch64 ;;
   *) sed -n 2,9p "$0"; exit 1 ;;
 esac

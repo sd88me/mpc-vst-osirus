@@ -14,5 +14,5 @@ roms/
 vst/mock/
 vst/custom/build/
 vst/custom/preview/
-vst/custom/images/
 
+vst/images/page_*.png
