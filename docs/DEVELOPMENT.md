@@ -2,59 +2,56 @@
 
 Repo `~/mpc-vst-osirus` (local git, nothing pushed). GPL-3.0, Gen2/aarch64 only. See README.md, src/VENDORED.md.
 
-## State
+## State (2026-10-25)
+- **Repo:** https://github.com/sd88me/mpc-vst-osirus (public, GPL-3.0; README, CREDITS.md, src/VENDORED.md). `main` is pushed.
 - **Engine:** gearmulator Virus A/B/C (DSP56300 JIT) vendored in `src/gearmulator/`; schwung-virus glue `src/dsp/virus_plugin.cpp`
-  (forked child -> in-process emulator thread); `src/dsp/mpc_engine.cpp` maps it to `wrapper/engine.h`.
+  (forked child -> in-process emulator thread); `src/dsp/mpc_engine.cpp` maps it to `wrapper/engine.h`. B/C default DSP clock is 100%
+  (the Move's 45%/35% distorted a Virus C on the Live III). 254+ parameters (append only, `vst/params.lock`).
 - **Offline:** `./build.sh test` (x86 wrapper host test, PASSED); `build/x86/osirus_engine_test <dir with roms/>` passes for A, B, C
-  (boot, notes, presets, bank/patch tiles, state chunk 4.8 KB). aarch64 probe under QEMU matches x86.
-- **Device (user's MPC Live III, OS 3.9.1):** **0.1.7 is installed** (0.1.4 + STATS readout, B/C default DSP clock 100%) at `/nvme/Synths/sd88me - VST - Osirus/` (registered in
-  `pluginList-arm-64bit`; MPC.settings backups beside it). User has confirmed it loads and makes sound (0.1.1). Not yet confirmed on the
-  device: the latest skin (main page, BANKS tab, data wheel on presets, yellow Q-Link outlines, rom_bc hiding MOD 4-6 on a Virus A).
-- **ROMs:** user's test zips (`dist-local/`, gitignored) carry their Virus A (`.mid` pair) and C (`.BIN`) ROMs from your own ROM folder
-  (staged in the scratchpad `ex/roms`; recreate from your own ROM folder if gone). **Never commit or publish them.** The ROM folder is
-  `<plugin folder>/osirus/roms/`; the engine picks the first by model (A before B before C).
-- **Recipe to redeploy:** `./build.sh all`; `python3 ~/mpc-vst-plugins/tools/release.py --so vst/build/aarch64/osirus.so --skin "vst/build/skin/sd88me - VST - Osirus" --entry vst/build/pluginlist-entry.xml --version X --extra <dir with roms>:osirus --repo sd88me/mpc-vst-osirus --license GPL-3.0-only --id osirus -o dist-local`;
+  (boot, notes, presets, bank/patch tiles, INIT, state chunk). aarch64 probe under QEMU matches x86.
+- **Device (user's MPC Live III, OS 3.9.1):** **0.1.9 is installed** at `/nvme/Synths/sd88me - VST - Osirus/` (registered in
+  `pluginList-arm-64bit`; MPC.settings backups beside it), loaded for the user to test (OSC+VOICE merged page, taller header steppers).
+  Confirmed by the user earlier: loads, sounds, banks and tile steppers OK, Virus C distortion fixed by the 100% clock.
+  Not yet reported: data wheel stepping presets, Q-Link column outlines on every page, the merged OSC page, MOD page on a Virus A.
+- **ROMs:** user's test zips (`dist-local/`, gitignored) carry their Virus A (`.mid` pair) and C (`.BIN`) ROMs, staged in the scratchpad
+  `ex/roms` (copy again from the user's own ROM folder if gone). **Never commit or publish them.** ROM folder on the device:
+  `<plugin folder>/osirus/roms/`; the engine picks the first by model (A before B before C); ROM NUMBER on PLAY selects.
+- **Redeploy recipe:** `./build.sh all`; `python3 ~/mpc-vst-plugins/tools/release.py --so vst/build/aarch64/osirus.so --skin "vst/build/skin/sd88me - VST - Osirus" --entry vst/build/pluginlist-entry.xml --version X --extra <dir with roms>:osirus --repo sd88me/mpc-vst-osirus --license GPL-3.0-only --id osirus -o dist-local`;
   unzip with `python3 -I -m zipfile -e`, tar over ssh to the Live III (`root@<live3-address>`, key login), `sh install.sh -y -t /nvme/Synths`.
-  **Installing restarts MPC: ask first.** (A first attempt once printed "Job for acvs.service canceled" and changed nothing: run again.)
-- **Live III screen/control:** `ssh -f -N -L 6721:127.0.0.1:6720 root@<live3-address>`, then `curl localhost:6721/screen.png?half=1`,
-  `/tap?x=&y=`. No hardware buttons; the user adds the plugin to a track by hand. The `mpc` MCP points at the Force, not the Live III.
-- **mpc-vst-plugins:** PRs #524 (`vs=0` knob option) and #525 (NOTES: filmstrip cache, Osirus CPU) are MERGED; the checkout is on `main`. (Old note: `skin-hide-knob-value` (a98315a: `vs=0` drops a knob's value text; the Osirus build NEEDS
-  this branch checked out, or its `vs=0` knobs get a default value box; currently checked out) and `docs-osirus-gen2` (NOTES.md entries:
-  MPC's filmstrip cache fills /var/volatile; first Osirus CPU reading). Open PRs for both when asked; docs for the Osirus port itself
-  (GEN2.md, PORTING.md) are not written.
+  **Installing restarts MPC: ask first.** (Once it printed "Job for acvs.service canceled" and changed nothing: run again.) The osirus build needs
+  mpc-vst-plugins on `main` at or after PR #524 (`vs=0`).
+- **Live III screen/control:** `ssh -f -N -L 6721:127.0.0.1:6720 root@<live3-address>`, then `curl localhost:6721/screen.png?half=1`, `/tap?x=&y=`,
+  `/down` `/move` `/up` for a drag. No hardware buttons; the user adds the plugin to a track. The `mpc` MCP points at the Force, not the Live III.
+- **mpc-vst-plugins:** merged #524 (`vs=0`), #525 (NOTES: filmstrip cache, Osirus CPU), #528 (catalog: a Gen2-ONLY plugin via
+  `asset_pattern: "*-mpc-aarch64.zip"`, `gen2_only`). **#529 (gofmt of tools/desktop/catalog.go, the Desktop installer CI was red after #528) is open.**
 
-## Skin (done, awaiting the user's eyes on the device)
-Galaxpel art (gearmulator `skins/Galaxpel`, by Emre Babus, GPL-3.0; Bebas Neue OFL) cropped per section at ONE scale (`S = 0.80`
-in `tools/make_layout.py`, knob sockets 83 px everywhere), evenly packed by `pack()`, slate background, no knob values (`vs=0`),
-Q-Links in blocks of four with `qlink_bounds=column` (yellow outlines; the `QL` table in make_layout.py).
-Tabs: PLAY (title bar, preset/bank steppers, whole Patch Settings panel, ENGINE readouts + Panic + Init, OUTPUT knobs), BANKS (bank list 1 col,
-patches 3 cols x 10, page stepper), OSC (incl. OSC 3, unison, sub, portamento; drawn at 0.67), FILTER, LFO 1+2, LFO 3 / ARP, MOD (slots 4-6 only with `rom_bc:Yes`), FX 1, FX 2, VELOCITY.
-Commands: `tools/gen_params.py` -> `vst/params.json` (252 params; **append only**, params.lock), `tools/make_layout.py` -> `vst/layout.conf`,
-`tools/preview.sh <name>` -> `vst/preview/<name>/page_N.png` (offline, no device), `tools/import_galaxpel.py` -> `skin/galaxpel/pages.json`.
-Known skin gaps: Patch Settings "Secondary output" / "Out balance" are baked art with no parameter; FILTER page "Keyfollow base" shows as
-a small knob; the header's baked ">" arrow; the value boxes of OUTPUT sit at the very bottom edge; velocity knobs appear on both FILTER and VELOCITY
-(as in Galaxpel); B/C-only panels (OSC 3, phaser/EQ/dist, vocoder art) still show on a Virus A (only MOD 4-6 hides: add `when=rom_bc:Yes`
-to those `pack()` pieces to hide more).
+## Skin
+Galaxpel art (gearmulator `skins/Galaxpel`, by Emre Babus, GPL-3.0; Bebas Neue OFL) cropped per section, evenly packed (`pack()`), slate
+background, no knob values (`vs=0`), Q-Links in blocks of four with `qlink_bounds=column` (`QL` table in `tools/make_layout.py`).
+Scale: `S = 0.80` everywhere (knob sockets 83 px) EXCEPT the merged OSC page, drawn at 0.67 (70 px) so oscillators 1-3, mixer, ring mod, sub,
+unison and portamento fit one page. Tabs: PLAY (title bar + preset/bank steppers covering the baked display bar, whole Patch Settings panel,
+ENGINE: ROM/STATUS/STATS + PANIC + INIT PATCH, OUTPUT knobs), BANKS (bank list 1 column, patches 3 x 10, page stepper), OSC, FILTER, LFO 1+2,
+LFO 3 / ARP, MOD (slots 4-6 only with `rom_bc:Yes`), FX 1 (dist, analog, phaser, chorus), FX 2 (EQ, punch, delay), VELOCITY.
+Commands: `tools/gen_params.py` -> `vst/params.json`; `tools/make_layout.py` -> `vst/layout.conf`; `tools/preview.sh <name>` ->
+`vst/preview/<name>/page_N.png` (offline, no device); `tools/import_galaxpel.py [skin dir rml desc]` -> `pages.json` (any of the Osirus
+skins); `tools/make_assets.py` -> knob strip + browser tile; `tools/mock_skin.py` draws Trancy/Hoverland comparison pages (not shipped).
+User decision: **stay with Galaxpel** (Trancy = dark, clean sections but small labels; Hoverland = Galaxpel-like, largest labels).
+Known skin gaps: Patch Settings "Secondary output" / "Out balance" are baked art with no parameter; FILTER "Keyfollow base" and the arpeggiator
+"pattern" are knobs in dropdown sockets (no option list); the SYNC toggle covers the end of "SYNC 2-1"; MOD leans left on a Virus A; B/C-only panels
+(OSC 3, phaser/EQ/dist, vocoder art) still show on a Virus A (add `when=rom_bc:Yes` to those `pack()`/`piece()` calls to hide); the header's baked arrow.
+PRESETS: `Presets/0000-Default.xpl` and `0001-INIT.xpl` (the ROM's " - Init - " single, bank A preset 126) + browser tile, via `vst/skin_post.py`.
 
 ## Open items / next
-1. **User test list** (ask the user for results): data wheel steps presets with the preset display focused; BANKS tiles light the current
-   bank/patch and a tap loads it; page stepper; yellow Q-Link column outlines; MOD page in A mode (no slots 4-6); tab spacing/colour.
-2. **CPU:** first reading ~59% of one core for the emulator thread on a Live III (probably Virus A at 100% clock). Test Virus B/C and the DSP
-   CLOCK % control (B/C auto default is now 100%: at the old 35% a Virus C sounded distorted on the Live III, DSP thread ~57% of a fast core at 100%). `tools/bench.sh` is meaningless for this plugin (silent PASS): measure the
-   emulator thread over SSH (`/proc/<pid>/task/<tid>/stat` deltas) while MPC plays it. Consider limiting JIT threads/cores, nice value (-5 emu, DSP thread -10 set by gearmulator).
-3. **MPC filmstrip cache:** `/var/volatile/tmp/filmstrips` (tmpfs, never cleaned) filled to 100% and raised "Low Memory"; each MPC start writes ~260 files
-   (~600 MB), each plugin load 42-128 files. Cleared by hand once (rm of all temp_*.img; nothing held them open). User asked for a permanent fix:
-   plan = (a) test that MPC doesn't re-read deleted files while pages are used, (b) a small janitor addin (like skipback/commander) deleting stale
-   `temp_*.img`, (c) fewer distinct knob strips per skin. Not started.
-4. **Docs/catalog:** write Osirus entries in mpc-vst-plugins `docs/NOTES.md` (dated, device) / GEN2.md / PORTING.md (in-process emulator thread, aarch64-only,
-   ROMs at runtime). Catalog: `catalog_build.py` has no aarch64-only plugin support yet; release needs `tested.json`, the release workflow, `catalog/plugins/osirus.json`.
-5. **Engine gaps:** no MPC PRESET menu (`vst.json "programs": {"param": "preset"}`); the watchdog no longer respawns a hung emulator thread; B/C-only params
-   still accept writes on an A ROM; `Out balance`/`Secondary output` unimplemented; user banks come from `osirus/banks/*.mid` (untested on the device).
-6. Memory notes: `~/.claude/projects/-home-sam-mpc-vst-plugins/memory/osirus-gen2-port.md` (keep it in sync with this file).
-
-## Update (later, 2026-10-23)
-- User confirmed 0.1.7 "sounds good": the Virus C distortion was the DSP clock (old default 35% = Move number). Defaults are now 100% for A/B/C.
-  Emulator thread ~56% of one fast core at 100% on a Virus C (Live III), DROPOUTS 0. Virus B at 100% untested.
-- ENGINE panel STATS = `DROPOUTS n   DSP CPU x%` (emulator "DSP" thread CPU from /proc every ~2 s).
-- Still open: data wheel / BANKS tile / Q-Link outline results not reported back; filmstrip-cache janitor; docs (GEN2/PORTING); catalog (aarch64-only);
-  PRESET menu; hide more B/C-only panels on a Virus A with `when=rom_bc:Yes`.
+1. **User test list** (ask for results): data wheel on presets (focus the preset display first), BANKS tiles, Q-Link outlines, merged OSC page, MOD on A.
+2. **Catalog entry:** merge #529 (optional), then: ROM-FREE release zip (`release.py ... --extra` with NO roms, or none), tag, GitHub release (public action: ask),
+   `catalog_check.py <zip> --catalog --expect-id osirus --expect-repo sd88me/mpc-vst-osirus`, `tested.json` in the Osirus repo (MPC Live III (Gen2), 3.9.1,
+   version, date), then a PR adding `catalog/plugins/osirus.json` (`"asset_pattern": "*-mpc-aarch64.zip"`, style synth, tags emulation/virus, license GPL-3.0-only,
+   https screenshot, summary that does not imply Access endorsement). Also needs the Osirus `vst-release.yml` workflow or a manual `gh release create`.
+3. **CPU:** Virus C at 100% ~56% of one fast core, DROPOUTS 0 (STATS readout `DROPOUTS n   DSP CPU x%`). Virus B at 100% untested. `tools/bench.sh` is
+   meaningless for this plugin (silent PASS): measure the "DSP" thread over SSH (`/proc/<pid>/task/<tid>/stat` deltas).
+4. **MPC filmstrip cache:** `/var/volatile/tmp/filmstrips` (tmpfs, never cleaned) fills (~1 GB per MPC restart + plugin load; this session's reinstalls caused it) and raises
+   "Low Memory"; clear with `rm /var/volatile/tmp/filmstrips/temp_*.img` (nothing holds them open). Janitor addin / fewer knob strips: not started (NOTES.md has the facts).
+5. **Docs:** mpc-vst-plugins GEN2.md / PORTING.md entries for the Osirus port (in-process emulator thread, aarch64-only, ROMs at runtime) not written.
+6. **Engine gaps:** no MPC PRESET-menu list of the ROM's own patches (`vst.json "programs"`); watchdog no longer respawns a hung emulator thread; B/C-only params accept writes
+   on an A ROM; Out balance / Secondary output unimplemented; `osirus/banks/*.mid` user banks untested on the device.
+7. Memory notes: `~/.claude/projects/-home-sam-mpc-vst-plugins/memory/osirus-gen2-port.md` (keep in sync with this file).
