@@ -800,7 +800,7 @@ static uint8_t bank_index_to_midi_lsb(int bank_index, int bank_count) {
  * and three spellings of one condition is how they drift.
  */
 static inline bool shm_still_loading(const virus_shm_t *shm) {
-    return !shm || !shm->loading_complete || !shm->child_ready;
+    return !shm || (!shm->load_error[0] && (!shm->loading_complete || !shm->child_ready));
 }
 
 static const char *shm_lookup_preset_name(virus_shm_t *shm, int bank, int preset) {
@@ -836,7 +836,8 @@ static void shm_refresh_current_preset_name(virus_shm_t *shm) {
                  (const char*)shm->loading_status);
         return;
     }
-    snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "---");
+    snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "%s",
+             shm->load_error[0] ? (const char*)shm->load_error : "---");
 }
 
 static void midi_fifo_push(virus_shm_t *shm, const uint8_t *msg, int len) {
@@ -2888,6 +2889,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
          * boot we do not have one. */
         if (shm_still_loading(shm) && shm->loading_status[0])
             return snprintf(buf, buf_len, "%s", (const char*)shm->loading_status);
+        if (shm->load_error[0]) return snprintf(buf, buf_len, "%s", (const char*)shm->load_error);
         return snprintf(buf, buf_len, "---");
     }
     if (strcmp(key, "rom_list") == 0) {

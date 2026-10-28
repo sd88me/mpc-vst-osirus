@@ -10,5 +10,11 @@
     "device": "MPC Live III (Gen2)",
     "firmware": "3.9.1",
     "date": "2026-10-25"
+  },
+  {
+    "version": "0.2.6",
+    "device": "MPC Live III (Gen2)",
+    "firmware": "3.9.1",
+    "date": "2026-10-29"
   }
 ]
