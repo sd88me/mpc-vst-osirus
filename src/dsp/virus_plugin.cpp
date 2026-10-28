@@ -1482,8 +1482,21 @@ static void child_main_impl(virus_shm_t *shm) {
     snprintf(roms_dir, sizeof(roms_dir), "%s/roms", shm->module_dir);
     auto roms = virusLib::ROMLoader::findROMs(std::string(roms_dir));
     if (roms.empty()) {
-        snprintf((char*)shm->load_error, sizeof(shm->load_error),
-                 "No Virus ROM found in roms/ directory.");
+        int nfiles = -1;
+        if (DIR *d = opendir(roms_dir)) {
+            nfiles = 0;
+            while (const dirent *e = readdir(d)) if (e->d_name[0] != '.') nfiles++;
+            closedir(d);
+        }
+        if (nfiles < 0)
+            snprintf((char*)shm->load_error, sizeof(shm->load_error),
+                     "No Virus ROM: folder %s not found.", roms_dir);
+        else if (nfiles == 0)
+            snprintf((char*)shm->load_error, sizeof(shm->load_error),
+                     "No Virus ROM: %s is empty.", roms_dir);
+        else
+            snprintf((char*)shm->load_error, sizeof(shm->load_error),
+                     "No Virus ROM: %d file(s) in %s, none recognised.", nfiles, roms_dir);
         shm->initialized = 1; shm->loading_complete = 1;
         vlog("[child] no ROM found, exiting");
         return;

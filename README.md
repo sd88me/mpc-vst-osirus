@@ -12,7 +12,7 @@ Virus B is untested. Gen1 devices and the Force are not supported (the emulator'
 *Osirus is an independent project, not affiliated with or endorsed by Access Music. "Virus" is the name of the instrument it emulates.*
 
 ## You need your own ROM
-No ROM is included, and none may be shared. Put your own Virus ROM in `osirus/roms/` inside the plugin folder:
+No ROM is included, and none may be shared. Put your own Virus ROM in `osirus/roms/` inside the plugin folder (the folder the installer made, e.g. `/sdcard/Synths/sd88me - VST - Osirus/osirus/roms/`; no other location is searched, and ROMs are read when the plugin loads). If none is found, the PLAY page's status shows the exact folder it looked in:
 - **Virus A:** the OS update and preset files as `.mid` (for example `First_A_28.mid` together with `second_A_28.mid`).
 - **Virus B / C:** the flash image as `.bin`.
 
