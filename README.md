@@ -16,7 +16,7 @@ No ROM is included, and none may be shared. Put your own Virus ROM in `osirus/ro
 - **Virus A:** the OS update and preset files as `.mid` (for example `First_A_28.mid` together with `second_A_28.mid`).
 - **Virus B / C:** the flash image as `.bin`.
 
-The plugin finds the ROMs when it starts; with several, **ROM NUMBER** on the main page picks one (A, then B, then C). Extra banks from
+The plugin finds the ROMs when it starts; with several, **ROM NUMBER** on the PLAY page picks one (A, then B, then C). The choice is saved with the project. Changing it restarts the emulator once, a moment after you stop turning the knob (the status line says "switching..."); stepping through values never restarts it once per step, which crashed some hosts. Extra banks from
 SysEx `.mid` dumps in `osirus/banks/` show up as banks after the ROM's own.
 
 ## Using it

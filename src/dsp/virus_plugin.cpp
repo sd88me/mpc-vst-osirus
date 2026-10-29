@@ -652,6 +652,8 @@ struct virus_shm_t {
 
     /* ROM selection (child enumerates, parent selects) */
     volatile int rom_index;          /* which ROM to load (0-based) */
+    volatile long long rom_switch_at_ms; /* when a changed rom_index may restart the emulator (0 = nothing pending); see v2_render_block */
+    volatile int rom_active;         /* index of the ROM the running emulator booted with (child writes; -1 = none) */
     volatile int rom_count;          /* how many ROMs found (child writes) */
     char rom_names[8][64];           /* ROM display names (child writes) */
 
@@ -1521,6 +1523,7 @@ static void child_main_impl(virus_shm_t *shm) {
     /* Pick the selected ROM */
     int idx = shm->rom_index;
     if (idx < 0 || idx >= shm->rom_count) idx = 0;
+    shm->rom_active = idx;
     virusLib::ROMFile *rom = new virusLib::ROMFile(std::move(roms[idx]));
     vlog("[child] ROM loaded: %s model=%s (index %d/%d)",
          rom->getFilename().c_str(), rom->getModelName().c_str(), idx, shm->rom_count);
@@ -1905,8 +1908,27 @@ static void kill_child_and_reset(virus_instance_t *inst) {
      * new rom_index and clobber a good slot file (not caught by the empty-state guard).
      * pending_state replay re-establishes valid=1 with the new child's single. */
     shm->current_single_valid = 0;
+    shm->rom_active = -1;
     inst->params_user_dirty = 0;   /* R1: restart window is protected by the empty bail again */
 }
+
+/* The ROM was chosen (rom_index, e.g. by a restored project state) after the running boot had already picked one.
+ * Boot once more, here and not from the setters, so there is never more than one restart in flight. */
+static void reboot_if_rom_changed(virus_instance_t *inst) {
+    virus_shm_t *shm = inst->shm;
+    for (int n = 0; n < 2 && !inst->destroying && shm->rom_active >= 0 && shm->rom_count > 0 &&
+                    shm->rom_index >= 0 && shm->rom_index < shm->rom_count && shm->rom_index != shm->rom_active; n++) {
+        vlog("boot: ROM %d requested while %d was booting, rebooting", shm->rom_index, shm->rom_active);
+        snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Switching ROM...");
+        shm->dsp_clock_percent = 0;
+        kill_child_and_reset(inst);
+        if (!inst->destroying) start_emu_and_wait(inst);
+    }
+}
+
+#define ROM_SWITCH_SETTLE_MS 1200   /* how long rom_index must stay unchanged before the emulator restarts on the new ROM */
+
+static long long mono_ms() { struct timespec t; clock_gettime(CLOCK_MONOTONIC, &t); return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000; }
 
 static void* boot_thread_func(void *arg) {
     virus_instance_t *inst = (virus_instance_t*)arg;
@@ -1915,6 +1937,7 @@ static void* boot_thread_func(void *arg) {
     snprintf((char*)shm->loading_status, sizeof(shm->loading_status), "Starting...");
     if (!inst->destroying)
         start_emu_and_wait(inst);
+    reboot_if_rom_changed(inst);
 
     vlog("boot thread: boot complete");
     inst->boot_thread_running = 0;
@@ -1933,6 +1956,7 @@ static void* restart_thread_func(void *arg) {
 
     if (!inst->destroying)
         start_emu_and_wait(inst);
+    reboot_if_rom_changed(inst);
 
     vlog("restart thread: restart complete");
     inst->boot_thread_running = 0;
@@ -1968,6 +1992,7 @@ static void* v2_create_instance(const char *module_dir, const char *json_default
     if (!inst) return nullptr;
 
     inst->shm = (virus_shm_t*)calloc(1, sizeof(virus_shm_t));
+    if (inst->shm) inst->shm->rom_active = -1;
     if (!inst->shm) {
         free(inst);
         return nullptr;
@@ -2259,7 +2284,10 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
          * Instead, save the full state as pending and let it re-apply
          * after the new child boots with the correct ROM. */
         if (json_get_int(val, "rom_index", &ival) == 0) {
-            if (ival >= 0 && (shm->rom_count == 0 || ival < shm->rom_count) && ival != shm->rom_index) {
+            if (ival >= 0 && (shm->rom_count == 0 || ival < shm->rom_count) &&
+                ival != (shm->rom_active >= 0 ? shm->rom_active : shm->rom_index)) {
+                /* against the ROM that is RUNNING, not the recorded choice: a host that restores the saved rom_index as a plain
+                 * parameter first has already recorded it, and the state must still switch the ROM. */
                 shm->rom_index = ival;
                 /* Bug #15: reset DSP clock to auto so the restarting child
                  * re-derives the correct per-model default (A=100, B=45, C=35).
@@ -2446,14 +2474,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         if (v < 0) v = atoi(val);  /* fall back to numeric */
         if (v < 0) v = 0;
         if (shm->rom_count > 0 && v >= shm->rom_count) v = shm->rom_count - 1;
-        if (v == shm->rom_index && shm->child_ready) return; /* no change */
+        if (v == shm->rom_index) return; /* no change */
         shm->rom_index = v;
-        /* Reset clock to auto so new ROM gets its appropriate default */
-        shm->dsp_clock_percent = 0;
-        /* Restart child with new ROM (in background thread) */
-        if (!inst->boot_thread_running) {
-            start_boot_worker(inst, restart_thread_func);
-        }
+        /* Never restart the emulator once per step: stepping the knob through several ROMs tore the DSP down and rebooted it
+         * for each value and crashed the host (Ableton Live reports). The choice is recorded and the restart happens once,
+         * from v2_render_block, after the value has stayed put for ROM_SWITCH_SETTLE_MS. A host restoring the saved
+         * parameters on a plugin reload sets it the same way, once. */
+        shm->rom_switch_at_ms = mono_ms() + ROM_SWITCH_SETTLE_MS;
         return;
     }
     if (strcmp(key, "dsp_clock") == 0) {
@@ -2883,8 +2910,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "rom_count") == 0) return snprintf(buf, buf_len, "%d", shm->rom_count);
     if (strcmp(key, "rom_name") == 0) {
         int idx = shm->rom_index;
-        if (idx >= 0 && idx < shm->rom_count && shm->rom_names[idx][0])
+        if (idx >= 0 && idx < shm->rom_count && shm->rom_names[idx][0]) {
+            if (shm->child_ready && idx != shm->rom_active)
+                return snprintf(buf, buf_len, "%s - switching...", shm->rom_names[idx]);
             return snprintf(buf, buf_len, "%s", shm->rom_names[idx]);
+        }
         /* Same reasoning as preset_name: dashes are an answer, and during the
          * boot we do not have one. */
         if (shm_still_loading(shm) && shm->loading_status[0])
@@ -2967,7 +2997,10 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
          * those edits must serialize (referentially, like upstream) instead of being
          * silently dropped. params_user_dirty is set on a param edit and cleared on a
          * real load/restore/restart, so a good slot is still protected when no edit is pending. */
-        if (!shm->current_single_valid && !inst->params_user_dirty) {
+        /* ...except when a ROM other than the first is chosen or running: MPC saves only this state, so returning nothing
+         * here dropped the ROM choice of a plugin whose patch was never touched (it came back as the first ROM). */
+        const bool rom_set = shm->rom_index > 0 || shm->rom_active > 0;
+        if (!shm->current_single_valid && !inst->params_user_dirty && !rom_set) {
             if (buf_len > 0) buf[0] = '\0';
             return 0;
         }
@@ -3106,6 +3139,17 @@ static void v2_render_block(void *instance, int16_t *out, int frames) {
     }
 
     virus_shm_t *shm = inst->shm;
+
+    /* a changed ROM number that has settled: switch once */
+    if (shm->rom_switch_at_ms && mono_ms() >= shm->rom_switch_at_ms) {
+        shm->rom_switch_at_ms = 0;
+        if (shm->rom_active >= 0 && shm->rom_index != shm->rom_active && shm->rom_index < shm->rom_count &&
+            !inst->boot_thread_running && !inst->destroying) {
+            vlog("[parent] ROM %d -> %d settled, restarting", shm->rom_active, shm->rom_index);
+            shm->dsp_clock_percent = 0;
+            start_boot_worker(inst, restart_thread_func);
+        }
+    }
 
     int avail = shm_ring_available(shm);
     if (shm->prof_ring_min == 0 || avail < shm->prof_ring_min)

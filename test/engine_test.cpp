@@ -127,6 +127,66 @@ int main(int argc, char **argv)
     render_rms(e, i, 0.5);
     CHECK(get(e, i, "cutoff") == cut0 && get(e, i, "bank_index") == bank0 && get(e, i, "preset") == pre0, "state restored cutoff %s bank %s preset %s",
           get(e, i, "cutoff").c_str(), get(e, i, "bank_index").c_str(), get(e, i, "preset").c_str());
+
+    // ROM switch: stepping the knob must not restart the emulator once per step (that crashed Ableton Live); the emulator
+    // restarts once, after the value has stayed put for a moment
+    {
+        const std::string model0 = get(e, i, "rom_model");
+        const int nroms = atoi(get(e, i, "rom_count").c_str());
+        CHECK(nroms >= 2, "rom_count %d (needs two ROMs in roms/ for this phase)", nroms);
+        for (int k = 0; k < 8; k++) { e->set_param(i, "rom_index", std::to_string(k).c_str()); render_rms(e, i, 0.1); }
+        e->set_param(i, "rom_index", "1");
+        render_rms(e, i, 0.3);
+        CHECK(get(e, i, "is_loading") == "0" && get(e, i, "rom_model") == model0, "knob stepped 0..7: still on Virus %s, no restart yet", model0.c_str());
+        CHECK(get(e, i, "rom_name").find("switching") != std::string::npos, "status \"%s\"", get(e, i, "rom_name").c_str());
+        for (int k = 0; k < 120 && get(e, i, "rom_model") == model0; k++) render_rms(e, i, 0.1);
+        for (int k = 0; k < 120 && get(e, i, "is_loading") == "1"; k++) render_rms(e, i, 0.1);
+        render_rms(e, i, 0.5);
+        CHECK(get(e, i, "rom_model") != model0 && get(e, i, "rom_name") == "Virus C", "switched once, live: Virus %s \"%s\"", get(e, i, "rom_model").c_str(), get(e, i, "rom_name").c_str());
+        e->midi(i, on, 3);
+        double r2 = render_rms(e, i, 1.0);
+        e->midi(i, off, 3);
+        CHECK(r2 > 0.001, "new ROM sounds, rms %.4f", r2);
+        std::string st2 = get(e, i, "state");
+        e->destroy(i);
+        i = e->create(argv[1]);
+        e->set_param(i, "state", st2.c_str());
+        // a host also restores the saved parameter values one by one: rom_index arrives as a plain parameter, after the boot
+        for (waited = 0; get(e, i, "is_loading") == "1" && waited < 600; waited++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        e->set_param(i, "rom_index", "1");
+        for (int k = 0; k < 120 && get(e, i, "rom_name") != "Virus C"; k++) render_rms(e, i, 0.1);
+        for (int k = 0; k < 120 && get(e, i, "is_loading") == "1"; k++) render_rms(e, i, 0.1);
+        render_rms(e, i, 0.5);
+        CHECK(get(e, i, "rom_name") == "Virus C", "reload with state + parameter restore -> \"%s\"", get(e, i, "rom_name").c_str());
+    }
+
+    // a plugin reload: MPC restores only the saved parameter (rom_index), no state chunk
+    {
+        e->destroy(i);
+        i = e->create(argv[1]);
+        for (waited = 0; get(e, i, "is_loading") == "1" && waited < 600; waited++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        e->set_param(i, "rom_index", "1");
+        for (int k = 0; k < 120 && get(e, i, "rom_name") != "Virus C"; k++) render_rms(e, i, 0.1);
+        for (int k = 0; k < 120 && get(e, i, "is_loading") == "1"; k++) render_rms(e, i, 0.1);
+        render_rms(e, i, 0.5);
+        CHECK(get(e, i, "rom_name") == "Virus C", "parameter-only restore switches the ROM: \"%s\"", get(e, i, "rom_name").c_str());
+    }
+
+    // the ROM choice alone (no patch ever touched) must survive a save and reload: MPC keeps only the state chunk
+    {
+        i = e->create(argv[1]);
+        for (waited = 0; get(e, i, "is_loading") == "1" && waited < 600; waited++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        e->set_param(i, "rom_index", "1");
+        std::string st3 = get(e, i, "state");
+        CHECK(!st3.empty(), "state is not empty after choosing a ROM with no patch touched (%zu bytes)", st3.size());
+        e->destroy(i);
+        i = e->create(argv[1]);
+        e->set_param(i, "state", st3.c_str());
+        for (waited = 0; get(e, i, "is_loading") == "1" && waited < 600; waited++) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        for (int k = 0; k < 40 && get(e, i, "rom_name").find("Virus C") == std::string::npos; k++) render_rms(e, i, 0.25);
+        render_rms(e, i, 0.5);
+        CHECK(get(e, i, "rom_name") == "Virus C", "ROM-only state restored: \"%s\"", get(e, i, "rom_name").c_str());
+    }
     e->destroy(i);
     printf(fails ? "FAILED\n" : "PASSED\n");
     return fails ? 1 : 0;

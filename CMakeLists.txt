@@ -41,3 +41,6 @@ target_link_libraries(osirus_dsp PUBLIC virusLib synthLib baseLib)
 
 add_executable(osirus_engine_test test/engine_test.cpp)
 target_link_libraries(osirus_engine_test PRIVATE osirus_dsp)
+
+add_executable(osirus_romcheck test/romcheck.cpp)
+target_link_libraries(osirus_romcheck PRIVATE osirus_dsp)
