@@ -1,0 +1,34 @@
+[
+  {
+    "path": "osirus/roms",
+    "label": "Virus ROMs",
+    "description": "Osirus needs a ROM from your own Access Virus A, B or C. Put one or more here; ROM NUMBER on the PLAY page picks which one runs.",
+    "hint": "A Virus B or C ROM is one 512 KB .bin file. A Virus A ROM is the OS update .mid file (and its presets .mid beside it).",
+    "rules": [
+      {
+        "label": "Virus ROM",
+        "ext": [".bin"],
+        "size": 524288,
+        "signature": "(C)ACCESS [",
+        "versions": [
+          {"prefix": "vb", "label": "Virus B"},
+          {"prefix": "vcl", "label": "Virus B"},
+          {"prefix": "vrt", "label": "Virus B"},
+          {"prefix": "vc", "label": "Virus C"},
+          {"prefix": "vr_6", "label": "Virus C"},
+          {"prefix": "vr", "label": "Virus B"},
+          {"prefix": "v2", "label": "Virus A"}
+        ]
+      },
+      {
+        "label": "Virus OS update (.mid)",
+        "ext": [".mid"],
+        "size_min": 460800,
+        "size_max": 614400,
+        "header": "MThd",
+        "unverified": true,
+        "note": "Looks like a Virus OS update or presets file. The plugin checks it when it loads: a Virus A needs the OS update and the presets file together."
+      }
+    ]
+  }
+]
