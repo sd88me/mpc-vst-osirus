@@ -25,6 +25,8 @@ Repo `~/mpc-vst-osirus` (local git, nothing pushed). GPL-3.0, Gen2/aarch64 only.
 - **mpc-vst-plugins:** merged #524 (`vs=0`), #525 (NOTES: filmstrip cache, Osirus CPU), #528 (catalog: a Gen2-ONLY plugin via
   `asset_pattern: "*-mpc-aarch64.zip"`, `gen2_only`). **#529 (gofmt of tools/desktop/catalog.go, the Desktop installer CI was red after #528) is open.**
 
+- **ROM upload step for the desktop installer:** built, tested offline, not pushed or tried on the device: see docs/HANDOFF_ROM_UPLOAD.md.
+
 ## Skin
 Galaxpel art (gearmulator `skins/Galaxpel`, by Emre Babus, GPL-3.0; Bebas Neue OFL) cropped per section, evenly packed (`pack()`), slate
 background, no knob values (`vs=0`), Q-Links in blocks of four with `qlink_bounds=column` (`QL` table in `tools/make_layout.py`).
