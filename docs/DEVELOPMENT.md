@@ -11,9 +11,6 @@ Repo `~/mpc-vst-osirus` (local git, nothing pushed). GPL-3.0, Gen2/aarch64 only.
   GAIN % was renamed OUTPUT LEVEL % (key `gain` unchanged, so saved states load). Possible follow-up: a headroom setting that lowers the patch volume inside the Virus.
 - **How it was measured (no env on the device: /etc is read-only):** a temporary build dumped the resampled int16 stream to a file and logged per-block times (`[child] blk= buf= ur= peak=`
   every ~2 s already exists with `OSIRUS_LOG`); the dump was scanned for flat tops and 2nd-difference spikes. Removed again before the release. Repeat the same way if a report shows DROPOUTS above 0.
-- **Device (Live III, MPC OS 3.10.1 layout):** MPC lists plugins from `/nvme/VST2 Plugins/<Mfr> - VST - <Name>/` (the plugin manager's migration put Osirus there; the old
-  `Synths` folder and its `MPC.settings` entry remain). A swap of `osirus.so` alone does NOT update the skin: copy `Plugin Skins/` too, clear
-  `/var/volatile/tmp/filmstrips/temp_*.img` and restart `acvs`, or the old label pictures stay. The layout was deliberately not changed in this release (3.10.1 is not public).
 - **Releasing:** `MPC_VST=<worktree of mpc-vst-plugins on rom-upload-helper> ./release.sh <version>` (see HANDOFF_ROM_UPLOAD.md; that branch is still local). 0.2.8 is released and in `tested.json`.
 
 ## State (2026-10-25)
