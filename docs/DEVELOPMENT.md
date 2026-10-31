@@ -2,6 +2,20 @@
 
 Repo `~/mpc-vst-osirus` (local git, nothing pushed). GPL-3.0, Gen2/aarch64 only. See README.md, src/VENDORED.md.
 
+## 0.2.8 (2026-10-31): user reports, what was found
+- **Keyboard on another MIDI channel was silent** (pads, channel 1, played): `Microcontroller::sendMIDI` drops channel messages whose channel is not the global one (0,
+  single mode). Fixed in `child_send_midi` (channel forced to 1: the track is the routing). Verified on the Live III.
+- **"Crackle", DROPOUTS 0, worse with high-velocity heavy chords, DSP CLOCK / GAIN do not help:** it is the Virus's own output clipping (the emulator's float output
+  reaches 1.000; ~230 flat-topped runs in 3 minutes of playing; no underruns, no slow blocks, no dropped blocks, DSP thread ~57% of one core, machine ~89% idle).
+  GAIN is applied after the clip, so it cannot help; **PATCH VOLUME** (inside the Virus) does. The DSP clock cap was raised to 200 as an experiment: no effect, reverted (max 100).
+  GAIN % was renamed OUTPUT LEVEL % (key `gain` unchanged, so saved states load). Possible follow-up: a headroom setting that lowers the patch volume inside the Virus.
+- **How it was measured (no env on the device: /etc is read-only):** a temporary build dumped the resampled int16 stream to a file and logged per-block times (`[child] blk= buf= ur= peak=`
+  every ~2 s already exists with `OSIRUS_LOG`); the dump was scanned for flat tops and 2nd-difference spikes. Removed again before the release. Repeat the same way if a report shows DROPOUTS above 0.
+- **Device (Live III, MPC OS 3.10.1 layout):** MPC lists plugins from `/nvme/VST2 Plugins/<Mfr> - VST - <Name>/` (the plugin manager's migration put Osirus there; the old
+  `Synths` folder and its `MPC.settings` entry remain). A swap of `osirus.so` alone does NOT update the skin: copy `Plugin Skins/` too, clear
+  `/var/volatile/tmp/filmstrips/temp_*.img` and restart `acvs`, or the old label pictures stay. The layout was deliberately not changed in this release (3.10.1 is not public).
+- **Releasing:** `MPC_VST=<worktree of mpc-vst-plugins on rom-upload-helper> ./release.sh <version>` (see HANDOFF_ROM_UPLOAD.md; that branch is still local). 0.2.8 is released and in `tested.json`.
+
 ## State (2026-10-25)
 - **Repo:** https://github.com/sd88me/mpc-vst-osirus (public, GPL-3.0; README, CREDITS.md, src/VENDORED.md). `main` is pushed.
 - **Engine:** gearmulator Virus A/B/C (DSP56300 JIT) vendored in `src/gearmulator/`; schwung-virus glue `src/dsp/virus_plugin.cpp`
