@@ -1014,8 +1014,11 @@ static int resample_block(resamp_state_t *st,
 
 static void child_send_midi(virusLib::Microcontroller *mc, const uint8_t *msg, int len) {
     if (!mc || len < 1) return;
+    /* The Virus runs in single mode with its global channel at 0 and drops every other channel (Microcontroller::sendMIDI),
+     * so a keyboard on any channel but 1 was silent while the pads (channel 1) played. The track is the routing: omni. */
+    const uint8_t status = msg[0] < 0xF0 ? (uint8_t)(msg[0] & 0xF0) : msg[0];
     synthLib::SMidiEvent ev(synthLib::MidiEventSource::Host,
-                            msg[0],
+                            status,
                             len > 1 ? msg[1] : 0,
                             len > 2 ? msg[2] : 0);
     mc->sendMIDI(ev);
@@ -2837,7 +2840,7 @@ static int build_ui_hierarchy(char *buf, int buf_len, const char *model_name) {
              "\"params\":[");
     H_PARAM("rom_index", "ROM");
     H_PARAM("dsp_clock", "DSP Clock");
-    H_PARAM("gain", "Gain");
+    H_PARAM("gain", "Output Level");
     if (buf[off-1] == ',') off--;
     H_APPEND("]}");
 

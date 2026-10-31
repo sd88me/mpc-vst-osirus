@@ -29,6 +29,12 @@ MPC's PRESET menu has `INIT` (the ROM's own "- Init -" single) and `Default`.
 **DSP CLOCK %** (PLAY page) is how fast the emulated DSP runs: 100 is the real instrument's speed. Lower it only if the CPU can't keep up
 (the STATS readout shows dropouts and the emulator's CPU). On an MPC Live III a Virus C at 100% uses about half of one fast core.
 
+**OUTPUT LEVEL %** (PLAY page) is the plugin's volume on the track, applied after the emulated Virus. It cannot cure crackle: if heavy,
+high-velocity chords crackle while the STATS readout shows DROPOUTS 0, the Virus's own output is clipping (as a real one does), and only
+turning down the sound *inside* it helps. Lower **PATCH VOLUME** (or the oscillator levels in the mixer, or the velocity amounts) until the chords are clean.
+
+A keyboard on any MIDI channel plays Osirus (the track decides the routing).
+
 ## Install
 Use the [MPC plugin catalog](https://sd88me.github.io/mpc-vst-plugins/) (its installer or `mpc-store.sh`), or download `Osirus-<version>-mpc-aarch64.zip` from
 [Releases](https://github.com/sd88me/mpc-vst-osirus/releases), unzip it, copy the folder to the device and run `sh install.sh` as root: it stops and

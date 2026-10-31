@@ -62,7 +62,7 @@ add(dict(key="rom_name", name="ROM", min=0, max=0, default=0, display="string", 
 add(dict(key="loading_status", name="STATUS", min=0, max=0, default=0, display="string", poll=True), "System")
 add(dict(key="rom_index", name="ROM #", min=0, max=7, default=0, display="int"), "System")
 add(dict(key="dsp_clock", name="DSP CLOCK %", min=10, max=100, default=100, display="int"), "System")
-add(dict(key="gain", name="GAIN %", min=1, max=100, default=70, display="int"), "System")
+add(dict(key="gain", name="OUTPUT LEVEL %", min=1, max=100, default=70, display="int"), "System")
 
 SEC_ORDER = []
 for r in rows:

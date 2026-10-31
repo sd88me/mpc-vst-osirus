@@ -234,7 +234,7 @@ p.readout(1088, 262, "engine_stats", "STATS", 340)
 p.button(722, 318, "all_notes_off", "PANIC")
 p.button(1088, 318, "init_patch", "INIT PATCH")
 p.panel(8, 354, 1264, 266, "OUTPUT", None)
-row(p, 16, 1264, 470, [("knob", "gain", "GAIN %"), ("knob", "dsp_clock", "DSP CLOCK %"), ("knob", "octave_transpose", "OCTAVE"), ("knob", "rom_index", "ROM NUMBER"),
+row(p, 16, 1264, 470, [("knob", "gain", "OUTPUT LEVEL %"), ("knob", "dsp_clock", "DSP CLOCK %"), ("knob", "octave_transpose", "OCTAVE"), ("knob", "rom_index", "ROM NUMBER"),
                        ("knob", "bender_range_up", "BEND UP"), ("knob", "bender_range_down", "BEND DOWN")])
 p.done()
 

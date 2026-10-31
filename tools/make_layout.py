@@ -265,7 +265,7 @@ f.row([("rom_name", "ROM")], "readout", span=4)
 f.row([("loading_status", "STATUS"), ("engine_stats", "STATS")], "readout", span=2)
 f.row([("all_notes_off", "PANIC"), ("init_patch", "INIT PATCH")], "button", span=2)
 f = Frame(40, 434 + Y86, 1206, 190, "OUTPUT", 6)
-f.row([P("gain", "GAIN %"), P("dsp_clock", "DSP CLOCK %"), P("octave_transpose", "OCTAVE"), P("rom_index", "ROM NUMBER"), P("bender_range_up", "BEND UP"),
+f.row([P("gain", "OUTPUT LEVEL %"), P("dsp_clock", "DSP CLOCK %"), P("octave_transpose", "OCTAVE"), P("rom_index", "ROM NUMBER"), P("bender_range_up", "BEND UP"),
        P("bender_range_down", "BEND DOWN")])
 
 # ---------------------------------------------------------------- BANKS
