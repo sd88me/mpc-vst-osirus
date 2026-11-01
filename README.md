@@ -24,22 +24,28 @@ Add *Osirus* to a plugin track. Pages (tabs at the bottom): **PLAY** (title bar 
 engine status and an INIT PATCH button, output controls), **BANKS** (bank list and the patches of the current bank, 30 per page),
 **OSC** (oscillators 1-3, mixer, ring mod, sub, unison, portamento), **FILTER**, **ENV**, **LFO 1+2**, **LFO 3 / ARP**, **MOD** (slots 4-6 appear on a Virus B or C only), **FX 1** (distortion, analog boost, punch, phaser, chorus), **FX 2** (equalizer, delay and reverb), **VELOCITY**.
 Every four Q-Links form a column that MPC outlines on the page; every knob shows its value under its label. The data wheel steps the preset.
-MPC's PRESET menu has `INIT` (the ROM's own "- Init -" single) and `Default`.
+## Your own patches: banks and favourites
+- **Banks.** Put Virus SysEx bank dumps (`.mid` or `.syx`, the single-patch dumps a Virus or a patch editor exports) in `osirus/banks/` inside the plugin folder
+  and reload the plugin. Each file is an extra bank after the ROM's own, named after the file, and it appears on the BANKS page.
+- **Favourites.** On the BANKS page, **+FAV** saves the current patch, including your knob changes, from any bank (ROM or your own), and **-FAV** removes the
+  favourite that is currently loaded. Up to 64 are kept in `osirus/favourites.dat`; they show by name in MPC's PRESET menu, where picking one loads it.
+  A favourite holds the patch itself, so it still works if the bank file it came from is gone. It remembers the Virus model it was made on (A, B or C):
+  the PRESET menu lists it as `Name [C]` on a matching ROM and as `Name <C>` on another, which is not loaded.
 
-**DSP CLOCK %** (PLAY page) is how fast the emulated DSP runs: 100 is the real instrument's speed. Lower it only if the CPU can't keep up
-(the STATS readout shows dropouts and the emulator's CPU). On an MPC Live III a Virus C at 100% uses about half of one fast core.
+## Levels and crackle
+There are three levels, in signal order:
+1. **Inside the Virus:** the oscillator and sub levels, filter drive and effects, then **PATCH VOLUME** (saved with each patch).
+2. **Headroom (automatic):** the emulated Virus clips its own output when several loud voices stack (heavy chords at high velocity), which is heard as crackle even
+   with DROPOUTS at 0. Osirus holds the Virus's channel volume at about 100 and gives the difference back after it, with a soft limiter, so ordinary patches are as loud
+   as before and hot ones no longer clip. There is no control for it.
+3. **OUTPUT LEVEL %** (PLAY page): the plugin's volume on the track, applied last. It sets loudness only; it cannot remove clipping that happened earlier.
 
-**OUTPUT LEVEL %** (PLAY page) is the plugin's volume on the track, applied after the emulated Virus. It cannot cure crackle: if heavy,
-high-velocity chords crackle while the STATS readout shows DROPOUTS 0, the Virus's own output is clipping (as a real one does), and only
-turning down the sound *inside* it helps. Lower **PATCH VOLUME** (or the oscillator levels in the mixer, or the velocity amounts) until the chords are clean.
+If a very hot patch still crackles, lower its PATCH VOLUME, the oscillator levels or the velocity amounts. A keyboard's CC 7 volume slider is scaled into the Virus's
+headroom range and cannot undo it. A keyboard on any MIDI channel plays Osirus (the track decides the routing).
 
-A keyboard on any MIDI channel plays Osirus (the track decides the routing).
-
-**Headroom.** Osirus keeps the emulated Virus out of its own output clipping (the crackle on heavy, high-velocity chords) by holding the Virus's channel volume
-at about 100 and giving the difference back after it, with a soft limiter; there is no extra control. PATCH VOLUME and the oscillator levels still help on a very hot patch.
-
-**Favourites.** On the BANKS page, **+FAV** saves the current patch (with your knob changes) from any bank and **-FAV** removes the loaded favourite. Favourites
-(up to 64, in `osirus/favourites.dat`) are listed in MPC's PRESET menu. A favourite made on another ROM model shows as `Name <C>` and is not loaded.
+**DSP CLOCK %** (PLAY page) is how fast the emulated DSP runs: 100 is the real instrument's speed, and the maximum. Lower it only if the CPU can't keep up
+(the STATS readout shows `DROPOUTS n` and the emulator's CPU). DROPOUTS above 0 means the emulator fell behind (a different problem from clipping); if it stays 0 and
+it still crackles, it is clipping. On an MPC Live III a Virus C at 100% uses about half of one fast core.
 
 ## Install
 Use the [MPC plugin catalog](https://sd88me.github.io/mpc-vst-plugins/) (its installer or `mpc-store.sh`), or download `Osirus-<version>-mpc-aarch64.zip` from
