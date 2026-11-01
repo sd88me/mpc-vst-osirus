@@ -89,6 +89,13 @@ typedef struct plugin_api_v2 {
 #define AUDIO_RING_SIZE     8192
 #define EMU_CHUNK           64
 #define OUTPUT_GAIN         0.7f
+/* Headroom. A hot Virus patch (several voices, high velocity) clips the emulated Virus's own output stage, before OUTPUT LEVEL can act: the
+ * crackle. Its channel volume (CC 7) sits ahead of that stage, so it is held at HEADROOM_CC7 (the default is 127) and the same amount is
+ * given back after it (HEADROOM_MAKEUP): about -6 dB inside, +5.6 dB out, so a patch that did not clip sounds as loud as before.
+ * Measured offline (Virus C, 258 patches, 6-note chords): clipped samples 46106 at CC 127, 824 at 100, 6 at 80, 0 at 64; the level
+ * follows (cc/127)^2.1..2.9. Peaks that used to be flattened inside the Virus now come out above full scale, so soft_limit() takes them. */
+#define HEADROOM_CC7        100
+#define HEADROOM_MAKEUP     1.9f
 #define MIDI_FIFO_SIZE      4096  /* bytes */
 #define RING_TARGET_FILL    768   /* ~17ms at 44100 Hz — extra headroom for note-on bursts */
 #define VIRUS_STATE_VERSION 3
@@ -972,6 +979,14 @@ static inline float cubic4(float s0, float s1, float s2, float s3, float p) {
     return -s0*f0q + s1*f1q + s2*f1p - s3*f0p;
 }
 
+/* Gentle ceiling for what the makeup gain lifts above full scale: linear to 0.8, then a tanh knee that reaches 1.0 only asymptotically. */
+static inline float soft_limit(float x) {
+    const float knee = 0.8f, a = fabsf(x);
+    if (a <= knee) return x;
+    const float y = knee + (1.0f - knee) * tanhf((a - knee) / (1.0f - knee));
+    return x < 0 ? -y : y;
+}
+
 /* Resample one stereo block of float[-1,1] @46875 → int16 @44100 with gain, using
  * 4-point cubic interpolation (cleanest / most transparent; A/B-tested vs linear
  * and a MAME box-lofi mode — cubic won clearly, so it's the only path). */
@@ -997,8 +1012,8 @@ static int resample_block(resamp_state_t *st,
         int b = ip + 3;                     /* ext index of s1 */
         float l = cubic4(ext_l[b-1], ext_l[b], ext_l[b+1], ext_l[b+2], f);
         float r = cubic4(ext_r[b-1], ext_r[b], ext_r[b+1], ext_r[b+2], f);
-        int32_t li = (int32_t)(l * gain * 32767.0f);
-        int32_t ri = (int32_t)(r * gain * 32767.0f);
+        int32_t li = (int32_t)(soft_limit(l * gain) * 32767.0f);
+        int32_t ri = (int32_t)(soft_limit(r * gain) * 32767.0f);
         if (li > 32767) li = 32767; if (li < -32768) li = -32768;
         if (ri > 32767) ri = 32767; if (ri < -32768) ri = -32768;
         out[oc*2+0] = (int16_t)li;
@@ -1021,6 +1036,8 @@ static void child_send_midi(virusLib::Microcontroller *mc, const uint8_t *msg, i
                             status,
                             len > 1 ? msg[1] : 0,
                             len > 2 ? msg[2] : 0);
+    if (status == 0xB0 && len > 2 && msg[1] == 7)    /* a keyboard's volume slider must not undo the headroom: its range is the Virus's 0..HEADROOM_CC7 */
+        ev.c = (uint8_t)((msg[2] & 0x7F) * HEADROOM_CC7 / 127);
     mc->sendMIDI(ev);
 }
 
@@ -1622,6 +1639,10 @@ static void child_main_impl(virus_shm_t *shm) {
          * aftertouch from corrupting Page B parameters. */
         mc->sendControlCommand(virusLib::MIDI_CONTROL_HIGH_PAGE, 0x1);
     }
+    {
+        const uint8_t vol[3] = { 0xB0, 7, 127 };   /* full channel volume, which child_send_midi maps to HEADROOM_CC7; it outlives patch changes (checked over 258 patches), not an emulator restart */
+        child_send_midi(mc, vol, 3);
+    }
     vlog("[child] DSP initialized");
 
     /* 7b. Apply DSP clock scaling.
@@ -1800,7 +1821,7 @@ static void child_main_impl(virus_shm_t *shm) {
             }
 
             /* Resample 46875→44100 (4-point cubic) */
-            float gain = (shm->gain_percent > 0) ? (shm->gain_percent / 100.0f) : OUTPUT_GAIN;
+            float gain = ((shm->gain_percent > 0) ? (shm->gain_percent / 100.0f) : OUTPUT_GAIN) * HEADROOM_MAKEUP;
             int16_t resampled[RESAMPLE_MAX_OUT * 2];
             int out_count = resample_block(&rs, proc_l, proc_r, EMU_CHUNK, gain,
                                            resampled, RESAMPLE_MAX_OUT);
