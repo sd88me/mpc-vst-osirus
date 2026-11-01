@@ -7,6 +7,7 @@
     "aarch64"
   ],
   "so": "osirus.so",
+  "programs": {"param": "favourite"},
   "params": "params.json",
   "layout": "layout.conf",
   "art": "html",

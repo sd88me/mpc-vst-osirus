@@ -44,3 +44,6 @@ target_link_libraries(osirus_engine_test PRIVATE osirus_dsp)
 
 add_executable(osirus_romcheck test/romcheck.cpp)
 target_link_libraries(osirus_romcheck PRIVATE osirus_dsp)
+
+add_executable(osirus_soak test/soak.cpp)
+target_link_libraries(osirus_soak PRIVATE osirus_dsp)

@@ -4360,6 +4360,30 @@
    "max": 1,
    "default": 0,
    "momentary": true
+  },
+  {
+   "key": "favourite",
+   "name": "FAVOURITE",
+   "min": 0,
+   "max": 63,
+   "default": 63,
+   "display": "int"
+  },
+  {
+   "key": "fav_save",
+   "name": "SAVE FAV",
+   "min": 0,
+   "max": 1,
+   "default": 0,
+   "momentary": true
+  },
+  {
+   "key": "fav_delete",
+   "name": "DEL FAV",
+   "min": 0,
+   "max": 1,
+   "default": 0,
+   "momentary": true
   }
  ],
  "sections": [
@@ -4444,7 +4468,10 @@
     "rom_bc",
     "rom_bc",
     "engine_stats",
-    "init_patch"
+    "init_patch",
+    "favourite",
+    "fav_save",
+    "fav_delete"
    ]
   },
   {

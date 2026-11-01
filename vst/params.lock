@@ -252,3 +252,6 @@ rom_bc
 rom_bc
 engine_stats
 init_patch
+favourite
+fav_save
+fav_delete
