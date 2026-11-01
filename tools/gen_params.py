@@ -98,6 +98,10 @@ add(dict(key="rom_bc", name="B/C ROM", options=["No", "Yes"], default="No"), "Sy
 add(dict(key="rom_bc", name="B/C ROM", options=["No", "Yes"], default="No"), "System")
 add(dict(key="engine_stats", name="STATS", min=0, max=0, default=0, display="string", poll=True), "System")
 add(dict(key="init_patch", name="INIT", min=0, max=1, default=0, momentary=True), "System")
+# favourites (appended last: saved projects bind by index): "favourite" is MPC's native program list (vst.json "programs")
+add(dict(key="favourite", name="FAVOURITE", min=0, max=63, default=63, display="int"), "System")
+add(dict(key="fav_save", name="SAVE FAV", min=0, max=1, default=0, momentary=True), "System")
+add(dict(key="fav_delete", name="DEL FAV", min=0, max=1, default=0, momentary=True), "System")
 sections = [{"label": "Browse", "keys": keys_in["Browse"]}, {"label": "Banks", "keys": keys_in["Banks"]}, {"label": "System", "keys": keys_in["System"]}]
 sections += [{"label": s, "keys": keys_in[s]} for s in SEC_ORDER]
 for p in params:

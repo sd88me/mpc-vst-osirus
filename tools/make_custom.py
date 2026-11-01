@@ -114,8 +114,9 @@ class Page:
         self.label(cx, cy - h // 2 - 22, label, INK_DIM, 19)
         self.widgets.append('readout cx=%d cy=%d w=%d h=%d label="" key=%s' % (cx, cy + Y86, w, h, key))
 
-    def button(self, cx, cy, key, label, w=130, h=40):
-        self.widgets.append('button cx=%d cy=%d label="%s" key=%s' % (cx, cy + Y86, label, key))
+    def button(self, cx, cy, key, label, w=None, h=None):
+        size = " w=%d h=%d" % (w, h) if w and h else ""
+        self.widgets.append('button cx=%d cy=%d%s label="%s" key=%s' % (cx, cy + Y86, size, label, key))
 
     def layer(self, rect, cond):
         """Context manager: what is drawn inside is a separate image shown only while <cond> (when=<param>:<option>)."""
@@ -242,6 +243,8 @@ p.done()
 p = Page("BANKS", ["preset", "bank_index", "patch_page_prev", "patch_page_next"])
 p.widgets.append('stepper w=560 h=44 cx=520 cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (30 + Y86))
 p.widgets.append('stepper w=250 h=44 cx=150 cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (30 + Y86))
+p.button(856, 30, "fav_save", "+FAV", w=92, h=44)
+p.button(954, 30, "fav_delete", "-FAV", w=92, h=44)
 p.widgets.append('stepper w=240 h=44 cx=1120 cy=%d label="" key=patch_page_text get=patch_page_text prev=patch_page_prev next=patch_page_next style=dotmatrix' % (30 + Y86))
 p.panel(8, 62, 262, 558, "BANKS", "patch")
 p.widgets.append('list x=22 y=%d w=236 h=486 cols=1 rows=16 gap=4 th=27 key=bank_slot' % (112 + Y86))

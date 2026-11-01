@@ -919,6 +919,17 @@ struct virus_instance_t {
     int force_next_preset;
     int force_next_bank;
 
+    /* Favourites: patches saved from any bank, listed as MPC's native programs (vst.json "programs": favourite). Each holds the whole
+     * 512-byte single, so it does not depend on the bank it came from. Persisted in <module_dir>/favourites.dat. */
+    int fav_count;
+    int fav_current;                     /* the favourite last picked */
+    volatile long long fav_list_ms;      /* when MPC last asked for a favourite's name (its program menu is open or being re-listed) */
+    int stats_cpu;                       /* the CPU figure last shown */
+    char stats_cache[64];                /* engine_stats text held still while that menu is open: a changed readout makes the host re-list and close it */
+    uint32_t fav_stamp;                  /* shm->preset_req_gen when it was picked: a later preset load means it is no longer current */
+    char fav_name[64][32];
+    uint8_t fav_data[64][512];
+
     /* Per-note pressure tracking for polypressure → channel pressure.
      * The Virus only has mono aftertouch (ChanPres), so we convert
      * poly aftertouch by taking the max pressure across active notes. */
@@ -1988,6 +1999,8 @@ static int start_boot_worker(virus_instance_t *inst, void *(*fn)(void *)) {
  * Plugin API v2
  * ===================================================================== */
 
+static void fav_load(virus_instance_t *inst);
+
 static void* v2_create_instance(const char *module_dir, const char *json_defaults) {
     (void)json_defaults;
 
@@ -2009,6 +2022,7 @@ static void* v2_create_instance(const char *module_dir, const char *json_default
     inst->shm->cc_values[91] = 100;  /* Patch Volume */
 
     vlog("create_instance from %s", module_dir);
+    fav_load(inst);
     snprintf((char*)inst->shm->loading_status, sizeof(inst->shm->loading_status), "Initializing...");
 
     start_boot_worker(inst, boot_thread_func);
@@ -2237,6 +2251,76 @@ static int patch_pages(virus_shm_t *shm) {
     return c > 0 ? (c + PATCH_SLOTS - 1) / PATCH_SLOTS : 1;
 }
 
+/* ---- Favourites ----------------------------------------------------------------------------------------------------------
+ * File: "OSFAV1\n\0" then records of 32 name bytes + 512 single bytes. MPC lists FAV_SLOTS programs ("favourite" 0..FAV_SLOTS-1, the
+ * wrapper reads the count at load); slots past fav_count are named "-". While the current patch is not a picked favourite the engine
+ * reports the first EMPTY slot as current (the menu opens beside the favourites), so picking favourite 1 is never "the program that is already current" (the wrapper ignores that). */
+#define FAV_SLOTS 64
+static const char FAV_MAGIC[8] = {'O', 'S', 'F', 'A', 'V', '1', '\n', 0};
+
+static void fav_path(virus_instance_t *inst, char *out, size_t n) { snprintf(out, n, "%s/favourites.dat", (const char*)inst->shm->module_dir); }
+
+static void fav_load(virus_instance_t *inst) {
+    inst->fav_count = 0;
+    char path[320]; fav_path(inst, path, sizeof path);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    char magic[8];
+    if (fread(magic, 1, 8, f) == 8 && memcmp(magic, FAV_MAGIC, 8) == 0) {
+        while (inst->fav_count < FAV_SLOTS) {
+            const int i = inst->fav_count;
+            if (fread(inst->fav_name[i], 1, 32, f) != 32 || fread(inst->fav_data[i], 1, 512, f) != 512) break;
+            inst->fav_count++;
+        }
+    }
+    fclose(f);
+    vlog("[fav] loaded %d favourite(s) from %s", inst->fav_count, path);
+}
+
+static bool fav_write(virus_instance_t *inst) {
+    char path[320], tmp[330]; fav_path(inst, path, sizeof path);
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE *f = fopen(tmp, "wb");
+    if (!f) { vlog("[fav] cannot write %s: %s", tmp, strerror(errno)); return false; }
+    bool ok = fwrite(FAV_MAGIC, 1, 8, f) == 8;
+    for (int i = 0; ok && i < inst->fav_count; i++)
+        ok = fwrite(inst->fav_name[i], 1, 32, f) == 32 && fwrite(inst->fav_data[i], 1, 512, f) == 512;
+    ok = (fclose(f) == 0) && ok;
+    if (ok) ok = rename(tmp, path) == 0;
+    if (!ok) vlog("[fav] write failed: %s", strerror(errno));
+    return ok;
+}
+
+/* save the live patch (the whole edit buffer, including knob tweaks) as the next favourite */
+static void fav_save(virus_instance_t *inst) {
+    virus_shm_t *shm = inst->shm;
+    if (!shm->current_single_valid || inst->fav_count >= FAV_SLOTS) { vlog("[fav] not saved (valid %d, count %d)", (int)shm->current_single_valid, inst->fav_count); return; }
+    uint8_t data[512];
+    for (int i = 0; i < 512; i++) data[i] = shm->current_single[i];
+    for (int i = 0; i < inst->fav_count; i++) if (memcmp(inst->fav_data[i], data, 512) == 0) return;   /* already there */
+    virusLib::ROMFile::TPreset pd{};
+    for (int i = 0; i < 512; i++) pd[i] = data[i];
+    std::string nm = virusLib::ROMFile::getSingleName(pd);
+    while (!nm.empty() && nm.back() == ' ') nm.pop_back();
+    const int i = inst->fav_count;
+    if (nm.empty()) snprintf(inst->fav_name[i], 31, "Favourite %d", i + 1);
+    else snprintf(inst->fav_name[i], 31, "%s", nm.c_str());
+    inst->fav_name[i][31] = shm->rom_model_name[0];   /* the ROM it was made on: 'A', 'B' or 'C' (0 = an older file: any) */
+    memcpy(inst->fav_data[i], data, 512);
+    inst->fav_count++;
+    if (!fav_write(inst)) inst->fav_count--;
+    else vlog("[fav] saved %d: \"%s\"", i + 1, inst->fav_name[i]);
+}
+
+static void fav_delete(virus_instance_t *inst) {
+    const int d = inst->fav_current;
+    if (d < 0 || d >= inst->fav_count || inst->fav_stamp != inst->shm->preset_req_gen) return;   /* only the one that is the current patch */
+    for (int i = d; i + 1 < inst->fav_count; i++) { memcpy(inst->fav_name[i], inst->fav_name[i + 1], 32); memcpy(inst->fav_data[i], inst->fav_data[i + 1], 512); }
+    inst->fav_count--;
+    fav_write(inst);
+    inst->fav_current = -1;
+}
+
 static void v2_set_param(void *instance, const char *key, const char *val) {
     virus_instance_t *inst = (virus_instance_t*)instance;
     if (!inst || !inst->shm) return;
@@ -2250,6 +2334,22 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
         }
         if ((n = slot_key(key, "patch_slot_", PATCH_SLOTS, &on)) != 0) {
             if (!on && atoi(val) != 0) { char b[16]; snprintf(b, sizeof b, "%d", inst->patch_page * PATCH_SLOTS + n - 1); v2_set_param(instance, "preset", b); }
+            return;
+        }
+        if (strcmp(key, "fav_save") == 0)   { if (atoi(val) != 0) fav_save(inst); return; }
+        if (strcmp(key, "fav_delete") == 0) { if (atoi(val) != 0) fav_delete(inst); return; }
+        if (strcmp(key, "favourite") == 0) {
+            const int idx = atoi(val);
+            const char fm = idx >= 0 && idx < inst->fav_count ? inst->fav_name[idx][31] : 0;
+            if (idx >= 0 && idx < inst->fav_count && shm->child_ready && (fm == 0 || fm == shm->rom_model_name[0])) {   /* another model's single is not loaded: it underran a Virus A */
+                for (int i = 0; i < 512; i++) shm->pending_single[i] = inst->fav_data[idx][i];
+                __sync_synchronize();
+                shm->pending_single_req_gen++;
+                inst->fav_current = idx;
+                inst->fav_stamp = shm->preset_req_gen;
+                inst->force_next_preset = 1;   /* same as a self-contained restore: the bank/preset indices no longer name what is loaded */
+                inst->force_next_bank = 1;
+            }
             return;
         }
         if (strcmp(key, "init_patch") == 0) {   /* the ROM's own " - Init - " single: bank A, preset 126, on A, B and C alike */
@@ -2879,6 +2979,19 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             return snprintf(buf, buf_len, "PAGE %d / %d", inst->patch_page + 1, patch_pages(shm));
     }
 
+    if (strncmp(key, "favourite", 9) == 0 || strncmp(key, "fav_", 4) == 0) {
+        if (strcmp(key, "favourite") == 0) return snprintf(buf, buf_len, "%d", (inst->fav_current >= 0 && inst->fav_current < inst->fav_count && inst->fav_stamp == shm->preset_req_gen) ? inst->fav_current : (inst->fav_count < FAV_SLOTS ? inst->fav_count : FAV_SLOTS - 1));
+        if (key[9] == ':') {
+            inst->fav_list_ms = mono_ms();
+            const int n = atoi(key + 10);
+            if (n < 0 || n >= inst->fav_count) return snprintf(buf, buf_len, "%s", "-");
+            const char fm = inst->fav_name[n][31];
+            if (fm == 0) return snprintf(buf, buf_len, "%.23s", inst->fav_name[n]);   /* an older file: no model recorded, loads anywhere */
+            if (fm != shm->rom_model_name[0]) return snprintf(buf, buf_len, "%.19s <%c>", inst->fav_name[n], fm);   /* made on another ROM: not loaded here */
+            return snprintf(buf, buf_len, "%.19s [%c]", inst->fav_name[n], fm);
+        }
+        return snprintf(buf, buf_len, "0");
+    }
     if (strcmp(key, "preset") == 0) return snprintf(buf, buf_len, "%d", shm->current_preset);
     if (strcmp(key, "preset_count") == 0) return snprintf(buf, buf_len, "%d",
         shm->cur_bank_preset_count > 0 ? shm->cur_bank_preset_count : shm->preset_count);
@@ -2951,7 +3064,11 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
         return snprintf(buf, buf_len, "%d", shm_still_loading(shm) ? 1 : 0);
     /* ENGINE readout on the main page: ring underruns since the emulator started, and the emulator thread's CPU (percent of one core) */
     if (strcmp(key, "engine_stats") == 0) {
-        return snprintf(buf, buf_len, "DROPOUTS %d   DSP CPU %d%%", shm->underrun_count, shm->dsp_cpu_pct);
+        if (mono_ms() - inst->fav_list_ms < 15000 && inst->stats_cache[0]) return snprintf(buf, buf_len, "%s", inst->stats_cache);
+        if (inst->stats_cpu < 0 || abs(shm->dsp_cpu_pct - inst->stats_cpu) >= 15) inst->stats_cpu = shm->dsp_cpu_pct;   /* a number that moves a point every 2 s re-lists the host's menus */
+        const int n = snprintf(buf, buf_len, "DROPOUTS %d   DSP CPU %d%%", shm->underrun_count, inst->stats_cpu);
+        snprintf(inst->stats_cache, sizeof inst->stats_cache, "%s", buf);
+        return n;
     }
     if (strcmp(key, "debug_info") == 0) {
         int avail = shm_ring_available(shm);
