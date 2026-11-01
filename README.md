@@ -17,7 +17,7 @@ No ROM is included, and none may be shared. Put your own Virus ROM in `osirus/ro
 - **Virus B / C:** the flash image as `.bin`.
 
 The plugin finds the ROMs when it starts; with several, **ROM NUMBER** on the PLAY page picks one (A, then B, then C). The choice is saved with the project. Changing it restarts the emulator once, a moment after you stop turning the knob (the status line says "switching..."); stepping through values never restarts it once per step, which crashed some hosts. Extra banks from
-SysEx `.mid` dumps in `osirus/banks/` show up as banks after the ROM's own.
+SysEx `.mid` or `.syx` dumps in `osirus/banks/` show up as banks after the ROM's own.
 
 ## Using it
 Add *Osirus* to a plugin track. Pages (tabs at the bottom): **PLAY** (title bar with the preset and bank steppers, Patch Settings,
@@ -34,6 +34,12 @@ high-velocity chords crackle while the STATS readout shows DROPOUTS 0, the Virus
 turning down the sound *inside* it helps. Lower **PATCH VOLUME** (or the oscillator levels in the mixer, or the velocity amounts) until the chords are clean.
 
 A keyboard on any MIDI channel plays Osirus (the track decides the routing).
+
+**Headroom.** Osirus keeps the emulated Virus out of its own output clipping (the crackle on heavy, high-velocity chords) by holding the Virus's channel volume
+at about 100 and giving the difference back after it, with a soft limiter; there is no extra control. PATCH VOLUME and the oscillator levels still help on a very hot patch.
+
+**Favourites.** On the BANKS page, **+FAV** saves the current patch (with your knob changes) from any bank and **-FAV** removes the loaded favourite. Favourites
+(up to 64, in `osirus/favourites.dat`) are listed in MPC's PRESET menu. A favourite made on another ROM model shows as `Name <C>` and is not loaded.
 
 ## Install
 Use the [MPC plugin catalog](https://sd88me.github.io/mpc-vst-plugins/) (its installer or `mpc-store.sh`), or download `Osirus-<version>-mpc-aarch64.zip` from

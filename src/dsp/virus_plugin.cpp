@@ -1416,7 +1416,7 @@ static void child_update_preset_name(virus_shm_t *shm,
         snprintf((char*)shm->preset_name, sizeof(shm->preset_name), "---");
 }
 
-/* Load user preset banks from .mid SysEx dump files in banks/ directory. */
+/* Load user preset banks from .mid or .syx SysEx dump files in banks/ directory. */
 static int child_load_user_banks(const char *banks_dir) {
     t_shm->user_bank_count = 0;
 
@@ -1432,7 +1432,7 @@ static int child_load_user_banks(const char *banks_dir) {
         const char *name = ent->d_name;
         size_t len = strlen(name);
         if (len < 5) continue;
-        if (strcasecmp(name + len - 4, ".mid") != 0) continue;
+        if (strcasecmp(name + len - 4, ".mid") != 0 && strcasecmp(name + len - 4, ".syx") != 0) continue;   /* a .syx is raw SysEx: the extractor takes it as it is */
         mid_files.push_back(std::string(banks_dir) + "/" + name);
     }
     closedir(dir);
@@ -2371,6 +2371,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 inst->force_next_preset = 1;   /* same as a self-contained restore: the bank/preset indices no longer name what is loaded */
                 inst->force_next_bank = 1;
             }
+            else if (idx >= 0 && idx < FAV_SLOTS) { inst->fav_current = idx; inst->fav_stamp = shm->preset_req_gen; }   /* an empty or other-model slot: shown as picked, nothing loaded */
             return;
         }
         if (strcmp(key, "init_patch") == 0) {   /* the ROM's own " - Init - " single: bank A, preset 126, on A, B and C alike */
@@ -3001,7 +3002,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     }
 
     if (strncmp(key, "favourite", 9) == 0 || strncmp(key, "fav_", 4) == 0) {
-        if (strcmp(key, "favourite") == 0) return snprintf(buf, buf_len, "%d", (inst->fav_current >= 0 && inst->fav_current < inst->fav_count && inst->fav_stamp == shm->preset_req_gen) ? inst->fav_current : (inst->fav_count < FAV_SLOTS ? inst->fav_count : FAV_SLOTS - 1));
+        if (strcmp(key, "favourite") == 0) return snprintf(buf, buf_len, "%d", (inst->fav_current >= 0 && inst->fav_current < FAV_SLOTS && inst->fav_stamp == shm->preset_req_gen) ? inst->fav_current : (inst->fav_count < FAV_SLOTS ? inst->fav_count : FAV_SLOTS - 1));
         if (key[9] == ':') {
             inst->fav_list_ms = mono_ms();
             const int n = atoi(key + 10);
@@ -3086,7 +3087,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     /* ENGINE readout on the main page: ring underruns since the emulator started, and the emulator thread's CPU (percent of one core) */
     if (strcmp(key, "engine_stats") == 0) {
         if (mono_ms() - inst->fav_list_ms < 15000 && inst->stats_cache[0]) return snprintf(buf, buf_len, "%s", inst->stats_cache);
-        if (inst->stats_cpu < 0 || abs(shm->dsp_cpu_pct - inst->stats_cpu) >= 15) inst->stats_cpu = shm->dsp_cpu_pct;   /* a number that moves a point every 2 s re-lists the host's menus */
+        if (inst->stats_cpu < 0 || abs(shm->dsp_cpu_pct - inst->stats_cpu) >= 10) inst->stats_cpu = shm->dsp_cpu_pct;   /* a number that moves a point every 2 s re-lists the host's menus */
         const int n = snprintf(buf, buf_len, "DROPOUTS %d   DSP CPU %d%%", shm->underrun_count, inst->stats_cpu);
         snprintf(inst->stats_cache, sizeof inst->stats_cache, "%s", buf);
         return n;
