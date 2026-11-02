@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include "fast_cores.h"
 #include <cmath>
 #include <cstdint>
 #include <dirent.h>
@@ -1495,6 +1496,10 @@ static int child_load_user_banks(const char *banks_dir) {
 #define VIRUS_EMU_NICE (-5)
 
 static void tune_emu_thread(void) {
+    /* Gen2 big.LITTLE (Live III: A55 0-3, A76 4-7): the fast cores minus MPC's "Audio Processing" core; ~3x less CPU than
+     * wandering onto the A55s (measured 2026-11-03, mpc-vst-plugins docs/EMULATOR_PORTS.md). No-op on same-speed CPUs.
+     * Set before gearmulator starts the DSP thread, which inherits it. */
+    if (fastcores::pin_this_thread()) vlog("[emu] pinned to the fast cores");
     int nice_val = VIRUS_EMU_NICE;
     if (const char *e = getenv("OSIRUS_NICE")) nice_val = atoi(e);
     if (nice_val == 0) return;
