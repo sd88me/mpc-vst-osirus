@@ -1616,6 +1616,9 @@ static void child_main_impl(virus_shm_t *shm) {
     vlog("[child] bootDSPs...");
     virusLib::Device::bootDSPs(dsp1, dsp2, *rom, false);
     vlog("[child] bootDSPs OK");
+    /* Gen2: each thread on a core of its own. Sharing the fast-core mask, the emulator thread often waited on the DSP thread's
+     * core (in MPC 2026-11-03: emulator thread 9% -> <2% of a core once separate). No-op on same-speed CPUs. */
+    if (fastcores::pin_named("DSP", 0)) { fastcores::pin_this_to(2); vlog("[emu] DSP and emulator threads on separate fast cores"); }
 
     /* 6. Boot drain */
     {

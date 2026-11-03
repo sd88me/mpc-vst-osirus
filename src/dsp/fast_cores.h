@@ -11,10 +11,18 @@
  *   fastcores::rt_priority(p)      a SCHED_FIFO priority that stays BELOW MPC's audio threads when on the fast cores (cap 15);
  *                                  p unchanged on same-speed CPUs, where the port's tuned value stays as it was
  *   fastcores::usable()            the core list itself (e.g. to spread several worker threads one per core)
+ *   fastcores::pin_named(name, i)  every thread of this process called <name> -> fast core i (modulo the count); for threads a
+ *                                  library starts itself (gearmulator's "DSP", "MC68331"). Threads that hand work to each other
+ *                                  all the time (a CPU and its DSP) run best on a core each: sharing one mask, they often shared
+ *                                  a core (MS2KR in MPC 2026-11-03: 113 dropouts -> 8-14 once on separate cores).
+ *   fastcores::pin_this_to(i)      this thread -> fast core i
  * Header-only C++; C ports: copy the three functions. Call from the thread itself, before it starts its own workers. */
 #pragma once
 #include <sched.h>
+#include <dirent.h>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 
 namespace fastcores {
@@ -46,6 +54,41 @@ inline bool pin_this_thread()
     cpu_set_t set; CPU_ZERO(&set);
     for (int c : fast) CPU_SET(c, &set);
     return sched_setaffinity(0, sizeof set, &set) == 0;
+}
+
+inline bool pin_tid(int tid, int core)
+{
+    cpu_set_t set; CPU_ZERO(&set); CPU_SET(core, &set);
+    return sched_setaffinity(tid, sizeof set, &set) == 0;
+}
+
+inline bool pin_this_to(int i)
+{
+    const auto fast = usable();
+    return !fast.empty() && pin_tid(0, fast[static_cast<size_t>(i) % fast.size()]);
+}
+
+// Returns how many threads it moved; 0 on same-speed CPUs.
+inline int pin_named(const char* name, int i)
+{
+    const auto fast = usable();
+    if (fast.empty()) return 0;
+    const int core = fast[static_cast<size_t>(i) % fast.size()];
+    int n = 0;
+    if (DIR* d = opendir("/proc/self/task")) {
+        while (dirent* e = readdir(d)) {
+            if (e->d_name[0] == '.') continue;
+            char p[64], comm[32] = {};
+            std::snprintf(p, sizeof p, "/proc/self/task/%s/comm", e->d_name);
+            if (std::FILE* f = std::fopen(p, "r")) {
+                if (std::fgets(comm, sizeof comm, f)) comm[std::strcspn(comm, "\n")] = 0;
+                std::fclose(f);
+            }
+            if (std::strcmp(comm, name) == 0 && pin_tid(std::atoi(e->d_name), core)) ++n;
+        }
+        closedir(d);
+    }
+    return n;
 }
 
 // MPC's audio threads are SCHED_RR priority 20 on the fast cores: a plugin thread there must stay below, or it preempts
