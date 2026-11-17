@@ -12,7 +12,7 @@ Virus B is untested. Gen1 devices and the Force are not supported (the emulator'
 *Osirus is an independent project, not affiliated with or endorsed by Access Music. "Virus" is the name of the instrument it emulates.*
 
 ## You need your own ROM
-No ROM is included, and none may be shared. Put your own Virus ROM in `osirus/roms/` inside the plugin folder (the folder the installer made, e.g. `/sdcard/Synths/sd88me - VST - Osirus/osirus/roms/`; no other location is searched, and ROMs are read when the plugin loads). If none is found, the PLAY page's status shows the exact folder it looked in:
+No ROM is included, and none may be shared. Put your own Virus ROM in `osirus/roms/` inside the plugin folder (see [Install](#install) for where that is). No other location is searched, and ROMs are read when the plugin loads. If none is found, the PLAY page's status shows the exact folder it looked in:
 - **Virus A:** the OS update and preset files as `.mid` (for example `First_A_28.mid` together with `second_A_28.mid`).
 - **Virus B / C:** the flash image as `.bin`.
 
@@ -48,10 +48,17 @@ headroom range and cannot undo it. A keyboard on any MIDI channel plays Osirus (
 it still crackles, it is clipping. On an MPC Live III a Virus C at 100% uses about half of one fast core.
 
 ## Install
-Use the [MPC plugin catalog](https://sd88me.github.io/mpc-vst-plugins/) (its installer or `mpc-store.sh`), or download `Osirus-<version>-mpc-aarch64.zip` from
-[Releases](https://github.com/sd88me/mpc-vst-osirus/releases), unzip it, copy the folder to the device and run `sh install.sh` as root: it stops and
-restarts MPC and backs up `MPC.settings`. On a Live III the writable drive is `/nvme/Synths` (`sh install.sh -t /nvme/Synths`); the zip's INSTALL.md has the details.
-Then put your ROM in the plugin folder's `osirus/roms/` and add Osirus to a plugin track. The release has no ROM in it.
+Osirus comes in one plugin format only: the older format, for plugins listed in `MPC.settings` (64-bit MPCs, MPC OS 3.x). There is no
+SDK-format zip for copying into `VST2 Plugins`.
+
+| How you install it | Plugin folder | How to add your ROM |
+|---|---|---|
+| With the **OpenMPC Plugin Manager** | `sd88me - VST - Osirus/` in the Synths folder it installed to | Use its **Your ROMs and files** step: it checks each file and copies it into `osirus/roms/`. Or copy it by hand. |
+| By hand: download `Osirus-<version>-mpc-aarch64.zip` from [Releases](https://github.com/sd88me/mpc-vst-osirus/releases), unzip it, copy the folder to the device and run `sh install.sh` as root (it stops and restarts MPC and backs up `MPC.settings`; on a Live III add `-t /nvme/Synths`; the zip's `INSTALL.md` has the details) | `sd88me - VST - Osirus/` in the Synths folder you installed to, for example `/nvme/Synths/sd88me - VST - Osirus/` on a Live III | By hand: with `scp`, over USB, or with the MPC's file browser, into `osirus/roms/` (make the folder if it isn't there). |
+
+The release has no ROM in it. Then add Osirus to a plugin track.
+
+**Upgrading:** the OpenMPC Plugin Manager and `install.sh` upgrade in place and keep `osirus/roms/` and `osirus/banks/`.
 
 ![PLAY](docs/screenshots/osirus-play.png)
 ![BANKS](docs/screenshots/osirus-banks.png)
