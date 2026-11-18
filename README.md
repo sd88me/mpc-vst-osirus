@@ -58,7 +58,7 @@ SDK-format zip for copying into `VST2 Plugins`.
 
 The release has no ROM in it. Then add Osirus to a plugin track.
 
-**Upgrading:** the OpenMPC Plugin Manager and `install.sh` upgrade in place and keep `osirus/roms/` and `osirus/banks/`.
+**Upgrading:** the OpenMPC Plugin Manager and `install.sh` upgrade in place and keep `osirus/roms/`, `osirus/banks/` and your favourites (`osirus/favourites.dat`; releases up to 0.2.9 did not keep them, so back the file up before upgrading from those).
 
 ![PLAY](docs/screenshots/osirus-play.png)
 ![BANKS](docs/screenshots/osirus-banks.png)
