@@ -63,6 +63,52 @@ The release has no ROM in it. Then add Osirus to a plugin track.
 ![PLAY](docs/screenshots/osirus-play.png)
 ![BANKS](docs/screenshots/osirus-banks.png)
 
+## Backing up your favourites and sounds
+
+Your favourites and your own files are kept in the plugin folder on the MPC, not in your projects (a project keeps only the sound its
+track uses). Back them up before you update the plugin or MPC OS, reset the device, or move to another MPC. These are the files to keep,
+inside the plugin folder `sd88me - VST - Osirus`:
+
+| File or folder | What it holds |
+|---|---|
+| `osirus/favourites.dat` | your favourites (+FAV) |
+| `osirus/banks/` | your banks |
+| `osirus/roms/` | your ROMs |
+
+Your ROMs are yours to keep with your backup, but don't share them.
+
+### Where the plugin folder is
+It is in `VST2 Plugins` on one of the MPC's drives, or in a Synths folder (`/sdcard/Synths`, or `/nvme/Synths` on a Live III),
+depending on how Osirus was installed. Over SSH (root access), this prints its path:
+
+```bash
+ssh root@<device-ip> 'find /sdcard /nvme /media -maxdepth 3 -type d -name "sd88me - VST - Osirus" 2>/dev/null'
+```
+
+### Backing up
+- **The plugin folder is on an SD card or USB drive:** plug the drive into a computer and copy the files above to it.
+- **Over SSH**, from a computer: this copies the whole plugin folder into one file, `osirus-backup.tar`. Put the folder that holds the
+  plugin folder (the path above without its last part) in place of `<parent folder>`:
+
+  ```bash
+  ssh root@<device-ip> 'cd "<parent folder>" && tar cf - "sd88me - VST - Osirus"' > osirus-backup.tar
+  ```
+
+### Restoring
+Install Osirus first (on the new device, or after the reset or update), then put back only the files above. Don't copy the whole
+old folder over the new one: that would put the old version of the plugin back too.
+
+- **From a drive:** copy the files back to the same places in the new plugin folder.
+- **Over SSH:** unpack the backup on your computer and send the files back. List only the ones your backup has, and put the new
+  plugin folder's path (found as above) in place of `<plugin folder>`:
+
+  ```bash
+  mkdir osirus-backup && tar xf osirus-backup.tar -C osirus-backup
+  tar cf - -C "osirus-backup/sd88me - VST - Osirus" "osirus/favourites.dat" "osirus/banks" "osirus/roms" | ssh root@<device-ip> 'cd "<plugin folder>" && tar xf -'
+  ```
+
+Then remove Osirus from its tracks and add it again (or reopen the project), so it reads the restored files.
+
 ## Building
 Needs Docker, Python 3 with Pillow, and a checkout of [mpc-vst-plugins](https://github.com/sd88me/mpc-vst-plugins) (`MPC_VST`, default
 `~/mpc-vst-plugins`):
