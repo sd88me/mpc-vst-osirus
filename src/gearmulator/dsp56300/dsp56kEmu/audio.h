@@ -252,7 +252,7 @@ namespace dsp56k
 		auto& getAudioOutputs() { return m_audioOutputs; }
 
 	public:
-		static constexpr uint32_t RingBufferSize = 8192 * 4;
+		static constexpr uint32_t RingBufferSize = 4096;   // MPC port: was 8192 * 4 (~20 MB per audio interface, four per DSP); the engine feeds 128-frame blocks
 
 	protected:
 		void readRXimpl(RxFrame& _values);

@@ -17,3 +17,7 @@ vst/custom/preview/
 
 vst/images/page_*.png
 vst/custom/
+/build/legacy/
+/tests/data/*.chunk
+/skins/
+__pycache__/

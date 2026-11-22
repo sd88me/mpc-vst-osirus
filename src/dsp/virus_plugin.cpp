@@ -21,6 +21,8 @@
 #include <cmath>
 #include <cstdint>
 #include <dirent.h>
+#include <sys/stat.h>
+#include <functional>
 #include <pthread.h>
 #include <unistd.h>
 #include <time.h>
@@ -571,10 +573,11 @@ static const virus_param_t g_params[] = {
     {"input_ringmod",        "Input RingMod",    VIRUS_PAGE_B, 99, 0, 127, VIRUS_MODEL_BC, NO_OPTS},
 };
 static const int NUM_PARAMS = sizeof(g_params) / sizeof(g_params[0]);
-static constexpr int VIRUS_MAX_BANKS = 32;
+static constexpr int VIRUS_MAX_BANKS = 64;       /* ROM + user banks (bank_index 0..63: a data wheel click / Q-Link event stays one bank) */
+static constexpr int VIRUS_MAX_ROM_BANKS = 32;   /* the ROM scan stops here (a Virus C has 8) */
 static constexpr int VIRUS_MAX_PRESETS_PER_BANK = 128;
 static constexpr int VIRUS_PRESET_NAME_BYTES = 24;
-static constexpr int VIRUS_MAX_USER_BANKS = 16;
+static constexpr int VIRUS_MAX_USER_BANKS = VIRUS_MAX_BANKS;   /* the ROM's banks + these stay within VIRUS_MAX_BANKS */
 
 /* =====================================================================
  * User preset banks (loaded from .mid files in banks/ folder)
@@ -937,14 +940,19 @@ struct virus_instance_t {
     uint32_t fav_stamp;                  /* shm->preset_req_gen when it was picked: a later preset load means it is no longer current */
     char fav_name[64][32];
     uint8_t fav_data[64][512];
+    int fav_gen;                         /* bumped whenever the favourites list changes (the native front end re-reads the names) */
+    int fav_pend_ok;                     /* +FAV: the sound as it was when the naming keyboard opened (fav_begin) */
+    uint8_t fav_pend[512];
+    uint32_t rng;
 
     /* Per-note pressure tracking for polypressure → channel pressure.
      * The Virus only has mono aftertouch (ChanPres), so we convert
      * poly aftertouch by taking the max pressure across active notes. */
     uint8_t note_pressure[128];
 
-    /* BANKS page: which 28-patch page of the current bank the patch list shows */
+    /* BANKS page: which 30-patch page of the current bank the patch list shows, and which 16-bank page the bank list shows */
     int patch_page;
+    int bank_page;
 
     /* The transposed note actually emitted at note-on, indexed by the ORIGINAL
      * (untransposed) note number; -1 = not held. Note-off replays this exact value
@@ -1356,7 +1364,7 @@ static int child_detect_valid_bank_count(virusLib::Microcontroller *mc,
 
     int detected = 0;
     virusLib::ROMFile::TPreset pd{};
-    for (int bank = 0; bank < VIRUS_MAX_BANKS; ++bank) {
+    for (int bank = 0; bank < VIRUS_MAX_ROM_BANKS; ++bank) {
         if (!child_get_single_preset(mc, rom, bank, 0, &pd)) break;
 
         if (child_use_mc_preset_map(rom)) {
@@ -1427,21 +1435,36 @@ static int child_load_user_banks(const char *banks_dir) {
         return 0;
     }
 
-    std::vector<std::string> mid_files;
-    struct dirent *ent;
-    while ((ent = readdir(dir)) != nullptr) {
-        const char *name = ent->d_name;
-        size_t len = strlen(name);
-        if (len < 5) continue;
-        if (strcasecmp(name + len - 4, ".mid") != 0 && strcasecmp(name + len - 4, ".syx") != 0) continue;   /* a .syx is raw SysEx: the extractor takes it as it is */
-        mid_files.push_back(std::string(banks_dir) + "/" + name);
-    }
     closedir(dir);
+    /* banks/ and its sub-folders (two levels): a bank in a sub-folder is named "<folder>/<file>" and the list sorts by that path, so a folder's banks stay together */
+    std::vector<std::string> mid_files;
+    std::function<void(const std::string &, int)> scan = [&](const std::string &d, int depth) {
+        DIR *dd = opendir(d.c_str());
+        if (!dd) return;
+        struct dirent *ent;
+        while ((ent = readdir(dd)) != nullptr) {
+            const char *name = ent->d_name;
+            if (name[0] == '.') continue;
+            const std::string full = d + "/" + name;
+            struct stat st;
+            if (stat(full.c_str(), &st) != 0) continue;
+            if (S_ISDIR(st.st_mode)) { if (depth < 2) scan(full, depth + 1); continue; }
+            size_t len = strlen(name);
+            if (len < 5) continue;
+            if (strcasecmp(name + len - 4, ".mid") != 0 && strcasecmp(name + len - 4, ".syx") != 0) continue;   /* a .syx is raw SysEx: the extractor takes it as it is */
+            mid_files.push_back(full);
+        }
+        closedir(dd);
+    };
+    scan(banks_dir, 0);
 
     std::sort(mid_files.begin(), mid_files.end());
 
     for (const auto &path : mid_files) {
-        if (t_shm->user_bank_count >= VIRUS_MAX_USER_BANKS) break;
+        if (t_shm->user_bank_count >= VIRUS_MAX_USER_BANKS || t_shm->rom_bank_count + t_shm->user_bank_count >= VIRUS_MAX_BANKS) {
+            vlog("[child] bank limit (%d) reached: %s and later files not loaded", VIRUS_MAX_BANKS, path.c_str());
+            break;
+        }
 
         /* Extract individual SysEx messages from .mid file.
          * Each is a DUMP_SINGLE: F0 00 20 33 01 <dev> 10 <bank> <prog> <256 bytes> <chk> F7
@@ -1471,8 +1494,8 @@ static int child_load_user_banks(const char *banks_dir) {
             continue;
         }
 
-        const char *fname = strrchr(path.c_str(), '/');
-        fname = fname ? fname + 1 : path.c_str();
+        const char *fname = path.c_str() + strlen(banks_dir);   /* "<file>" or "<folder>/<file>" */
+        while (*fname == '/') fname++;
         size_t name_len = strlen(fname);
         if (name_len > 4) name_len -= 4;
         if (name_len > sizeof(ub->name) - 1) name_len = sizeof(ub->name) - 1;
@@ -1758,7 +1781,7 @@ static void child_main_impl(virus_shm_t *shm) {
     sem_active.store(true);
     notify_timeout.store(0);
     snprintf((char*)shm->loading_status, sizeof(shm->loading_status),
-             "Ready: %d banks, %d presets/bank", shm->bank_count, shm->preset_count);
+             "Ready: %d banks of %d", shm->bank_count, shm->preset_count);
     memset((void*)shm->pending_params, 0, sizeof(shm->pending_params));
     vlog("[child] READY! entering emu loop");
 
@@ -2051,6 +2074,7 @@ static void* v2_create_instance(const char *module_dir, const char *json_default
     inst->shm->cc_values[91] = 100;  /* Patch Volume */
 
     vlog("create_instance from %s", module_dir);
+    inst->fav_current = -1;   /* none picked: calloc's 0 read as "favourite 1 is the sound" until the first preset load */
     fav_load(inst);
     snprintf((char*)inst->shm->loading_status, sizeof(inst->shm->loading_status), "Initializing...");
 
@@ -2261,8 +2285,8 @@ static void apply_restored_dsp_clock(virus_shm_t *shm, int restored) {
 
 /* BANKS page list tiles: bank_slot_1..BANK_SLOTS (a tap picks the bank), patch_slot_1..PATCH_SLOTS (a tap picks that preset of the
  * current bank's page), patch_page_prev/next, patch_page_text. A tile's text is get_param(key), its lit state get_param(key + "_on"). */
-#define BANK_SLOTS 16
-#define PATCH_SLOTS 30
+#define BANK_SLOTS 12
+#define PATCH_SLOTS 32
 
 /* "<prefix><n>" or "<prefix><n>_on": n (1-based) or 0 when key is not that; *on set for the "_on" form */
 static int slot_key(const char *key, const char *prefix, int max, int *on) {
@@ -2273,6 +2297,10 @@ static int slot_key(const char *key, const char *prefix, int max, int *on) {
     if (end == key + pl || n < 1 || n > max) return 0;
     *on = (strcmp(end, "_on") == 0);
     return (*on || *end == 0) ? (int)n : 0;
+}
+
+static int bank_pages(virus_shm_t *shm) {
+    return shm->bank_count > 0 ? (shm->bank_count + BANK_SLOTS - 1) / BANK_SLOTS : 1;
 }
 
 static int patch_pages(virus_shm_t *shm) {
@@ -2320,25 +2348,50 @@ static bool fav_write(virus_instance_t *inst) {
     return ok;
 }
 
-/* save the live patch (the whole edit buffer, including knob tweaks) as the next favourite */
-static void fav_save(virus_instance_t *inst) {
+/* store a 512-byte single as the next favourite, named `name` (empty: the patch's own name) */
+static void fav_store(virus_instance_t *inst, const uint8_t *data, const char *name) {
     virus_shm_t *shm = inst->shm;
-    if (!shm->current_single_valid || inst->fav_count >= FAV_SLOTS) { vlog("[fav] not saved (valid %d, count %d)", (int)shm->current_single_valid, inst->fav_count); return; }
-    uint8_t data[512];
-    for (int i = 0; i < 512; i++) data[i] = shm->current_single[i];
-    for (int i = 0; i < inst->fav_count; i++) if (memcmp(inst->fav_data[i], data, 512) == 0) return;   /* already there */
+    if (inst->fav_count >= FAV_SLOTS) { vlog("[fav] not saved (list full)"); return; }
+    for (int i = 0; i < inst->fav_count; i++)
+        if (memcmp(inst->fav_data[i], data, 512) == 0) {   /* already there: a new name renames it */
+            if (name && name[0]) { snprintf(inst->fav_name[i], 31, "%s", name); fav_write(inst); inst->fav_gen++; }
+            return;
+        }
     virusLib::ROMFile::TPreset pd{};
     for (int i = 0; i < 512; i++) pd[i] = data[i];
-    std::string nm = virusLib::ROMFile::getSingleName(pd);
+    std::string nm = name && name[0] ? std::string(name) : virusLib::ROMFile::getSingleName(pd);
     while (!nm.empty() && nm.back() == ' ') nm.pop_back();
     const int i = inst->fav_count;
+    memset(inst->fav_name[i], 0, 32);
     if (nm.empty()) snprintf(inst->fav_name[i], 31, "Favourite %d", i + 1);
     else snprintf(inst->fav_name[i], 31, "%s", nm.c_str());
     inst->fav_name[i][31] = shm->rom_model_name[0];   /* the ROM it was made on: 'A', 'B' or 'C' (0 = an older file: any) */
     memcpy(inst->fav_data[i], data, 512);
     inst->fav_count++;
     if (!fav_write(inst)) inst->fav_count--;
-    else vlog("[fav] saved %d: \"%s\"", i + 1, inst->fav_name[i]);
+    else { vlog("[fav] saved %d: \"%s\"", i + 1, inst->fav_name[i]); inst->fav_gen++; }
+}
+
+/* save the live patch (the whole edit buffer, including knob tweaks) as the next favourite */
+static void fav_save(virus_instance_t *inst) {
+    virus_shm_t *shm = inst->shm;
+    if (!shm->current_single_valid) { vlog("[fav] not saved (no patch yet)"); return; }
+    uint8_t data[512];
+    for (int i = 0; i < 512; i++) data[i] = shm->current_single[i];
+    fav_store(inst, data, nullptr);
+}
+
+/* the naming keyboard: fav_begin keeps the sound as it is now, fav_save_as stores that one under the typed name */
+static void fav_begin(virus_instance_t *inst) {
+    virus_shm_t *shm = inst->shm;
+    inst->fav_pend_ok = shm->current_single_valid ? 1 : 0;
+    for (int i = 0; i < 512; i++) inst->fav_pend[i] = shm->current_single[i];
+}
+
+static int bank_patch_count(virus_shm_t *shm, int bank) {
+    if (bank < 0 || bank >= shm->bank_count) return 0;
+    if (bank < shm->rom_bank_count) return shm->preset_count;
+    return shm->user_banks[bank - shm->rom_bank_count].preset_count;
 }
 
 static void fav_delete(virus_instance_t *inst) {
@@ -2347,6 +2400,7 @@ static void fav_delete(virus_instance_t *inst) {
     for (int i = d; i + 1 < inst->fav_count; i++) { memcpy(inst->fav_name[i], inst->fav_name[i + 1], 32); memcpy(inst->fav_data[i], inst->fav_data[i + 1], 512); }
     inst->fav_count--;
     fav_write(inst);
+    inst->fav_gen++;
     inst->fav_current = -1;
 }
 
@@ -2358,7 +2412,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     {
         int on = 0, n;
         if ((n = slot_key(key, "bank_slot_", BANK_SLOTS, &on)) != 0) {
-            if (!on && atoi(val) != 0) { char b[16]; snprintf(b, sizeof b, "%d", n - 1); v2_set_param(instance, "bank_index", b); }
+            if (!on && atoi(val) != 0) { char b[16]; snprintf(b, sizeof b, "%d", inst->bank_page * BANK_SLOTS + n - 1); v2_set_param(instance, "bank_index", b); }
             return;
         }
         if ((n = slot_key(key, "patch_slot_", PATCH_SLOTS, &on)) != 0) {
@@ -2366,6 +2420,30 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
             return;
         }
         if (strcmp(key, "fav_save") == 0)   { if (atoi(val) != 0) fav_save(inst); return; }
+        if (strcmp(key, "fav_begin") == 0)  { fav_begin(inst); return; }
+        if (strcmp(key, "fav_save_as") == 0) {
+            if (inst->fav_pend_ok) { fav_store(inst, inst->fav_pend, val); inst->fav_pend_ok = 0; }
+            else fav_save(inst);
+            return;
+        }
+        if (strcmp(key, "random_patch") == 0) {   /* RANDOM: any patch of any loaded bank (ROM and user), never the current one */
+            if (atoi(val) == 0 || !shm->child_ready || shm->bank_count < 1) return;
+            int total = 0;
+            for (int b = 0; b < shm->bank_count; b++) total += bank_patch_count(shm, b);
+            if (total < 2) return;
+            if (!inst->rng) inst->rng = (uint32_t)mono_ms() * 2654435761u | 1u;
+            for (int tries = 0; tries < 8; tries++) {
+                inst->rng ^= inst->rng << 13; inst->rng ^= inst->rng >> 17; inst->rng ^= inst->rng << 5;
+                int k = (int)(inst->rng % (uint32_t)total), b = 0;
+                while (k >= bank_patch_count(shm, b)) k -= bank_patch_count(shm, b++);
+                if (b == shm->current_bank && k == shm->current_preset) continue;
+                char v[16];
+                if (b != shm->current_bank) { snprintf(v, sizeof v, "%d", b); v2_set_param(instance, "bank_index", v); }
+                snprintf(v, sizeof v, "%d", k); v2_set_param(instance, "preset", v);
+                break;
+            }
+            return;
+        }
         if (strcmp(key, "fav_delete") == 0) { if (atoi(val) != 0) fav_delete(inst); return; }
         if (strcmp(key, "favourite") == 0) {
             const int idx = atoi(val);
@@ -2387,6 +2465,13 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
                 v2_set_param(instance, "bank_index", "0");
                 v2_set_param(instance, "preset", "126");
                 inst->patch_page = 126 / PATCH_SLOTS;
+            }
+            return;
+        }
+        if (strcmp(key, "bank_page_next") == 0 || strcmp(key, "bank_page_prev") == 0) {
+            if (atoi(val) != 0) {
+                const int d = key[10] == 'n' ? 1 : -1, pg = inst->bank_page + d;
+                if (pg >= 0 && pg < bank_pages(shm)) inst->bank_page = pg;
             }
             return;
         }
@@ -2560,6 +2645,7 @@ static void v2_set_param(void *instance, const char *key, const char *val) {
     }
     if (strcmp(key, "bank_index") == 0) {
         int idx = atoi(val);
+        if (idx >= 0 && idx < VIRUS_MAX_BANKS) inst->bank_page = idx / BANK_SLOTS;   /* the bank list shows the picked bank */
         if (!shm->child_ready) {   /* still booting: remember it, the emulator thread starts there */
             if (idx >= 0 && idx < VIRUS_MAX_BANKS) { shm->boot_bank = shm->current_bank = idx; shm->boot_preset = shm->current_preset = 0; }
             return;
@@ -2991,7 +3077,7 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     {
         int on = 0, n;
         if ((n = slot_key(key, "bank_slot_", BANK_SLOTS, &on)) != 0) {
-            const int b = n - 1;
+            const int b = inst->bank_page * BANK_SLOTS + n - 1;
             if (on) return snprintf(buf, buf_len, "%d", b == shm->current_bank ? 1 : 0);
             if (b >= shm->bank_count) return snprintf(buf, buf_len, "%s", "");
             if (b < shm->rom_bank_count) return snprintf(buf, buf_len, "BANK %c", 'A' + b);
@@ -3005,10 +3091,30 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
             const char *nm = shm_lookup_preset_name(shm, shm->current_bank, p);
             return snprintf(buf, buf_len, "%03d %s", p + 1, nm ? nm : "");
         }
+        if (strcmp(key, "bank_page_text") == 0)
+            return snprintf(buf, buf_len, "%d / %d", inst->bank_page + 1, bank_pages(shm));
         if (strcmp(key, "patch_page_text") == 0)
             return snprintf(buf, buf_len, "PAGE %d / %d", inst->patch_page + 1, patch_pages(shm));
     }
 
+    if (strcmp(key, "ready") == 0) return snprintf(buf, buf_len, "%d", shm->child_ready && !shm_still_loading(shm) ? 1 : 0);
+    if (strcmp(key, "fav_gen") == 0) return snprintf(buf, buf_len, "%d", inst->fav_gen);
+    if (strcmp(key, "fav_count") == 0) return snprintf(buf, buf_len, "%d", inst->fav_count);
+    if (strcmp(key, "fav_pending_name") == 0) {   /* the name +FAV offers: the patch's own name */
+        virusLib::ROMFile::TPreset pd{};
+        for (int i = 0; i < 512; i++) pd[i] = inst->fav_pend_ok ? inst->fav_pend[i] : shm->current_single[i];
+        std::string nm = virusLib::ROMFile::getSingleName(pd);
+        while (!nm.empty() && nm.back() == ' ') nm.pop_back();
+        return snprintf(buf, buf_len, "%s", nm.c_str());
+    }
+    if (strncmp(key, "fav_name:", 9) == 0) {      /* favourite:<n> without the 15 s hold of the stats readout (the native front end polls it) */
+        const int n = atoi(key + 9);
+        if (n < 0 || n >= inst->fav_count) return snprintf(buf, buf_len, "%s", "-");
+        const char fm = inst->fav_name[n][31];
+        if (fm == 0) return snprintf(buf, buf_len, "%.23s", inst->fav_name[n]);
+        if (fm != shm->rom_model_name[0]) return snprintf(buf, buf_len, "%.19s <%c>", inst->fav_name[n], fm);
+        return snprintf(buf, buf_len, "%.19s [%c]", inst->fav_name[n], fm);
+    }
     if (strncmp(key, "favourite", 9) == 0 || strncmp(key, "fav_", 4) == 0) {
         if (strcmp(key, "favourite") == 0) return snprintf(buf, buf_len, "%d", (inst->fav_current >= 0 && inst->fav_current < FAV_SLOTS && inst->fav_stamp == shm->preset_req_gen) ? inst->fav_current : (inst->fav_count < FAV_SLOTS ? inst->fav_count : FAV_SLOTS - 1));
         if (key[9] == ':') {
@@ -3052,7 +3158,8 @@ static int v2_get_param(void *instance, const char *key, char *buf, int buf_len)
     if (strcmp(key, "display_rev") == 0)
         return snprintf(buf, buf_len, "%u", (unsigned)(shm->preset_done_gen * 131u + shm->pending_single_done_gen * 977u +
                         (unsigned)shm->current_bank * 7919u + (unsigned)shm->current_preset * 104729u +
-                        (unsigned)shm->loading_complete * 15485863u + (unsigned)shm->rom_index * 32452843u));
+                        (unsigned)shm->loading_complete * 15485863u + (unsigned)shm->rom_index * 32452843u +
+                        (unsigned)inst->patch_page * 49979687u + (unsigned)inst->bank_page * 86028121u));   /* a page step relights the tiles */
     if (strcmp(key, "rom_count") == 0) return snprintf(buf, buf_len, "%d", shm->rom_count);
     if (strcmp(key, "rom_name") == 0) {
         int idx = shm->rom_index;

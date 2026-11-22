@@ -47,7 +47,7 @@ def add(p, sec=None):
 
 
 # engine keys first
-add(dict(key="bank_index", name="BANK", min=0, max=31, default=0, display="int"), "Browse")
+add(dict(key="bank_index", name="BANK", min=0, max=63, default=0, display="int"), "Browse")   # was 31: projects restore the bank from the state chunk
 add(dict(key="preset", name="PRESET", min=0, max=127, default=0, display="int"), "Browse")
 add(dict(key="bank_name", name="BANK NAME", min=0, max=0, default=0, display="string", poll=True), "Browse")
 add(dict(key="preset_name", name="PRESET NAME", min=0, max=0, default=0, display="string", poll=True), "Browse")
@@ -102,6 +102,13 @@ add(dict(key="init_patch", name="INIT", min=0, max=1, default=0, momentary=True)
 add(dict(key="favourite", name="FAVOURITE", min=0, max=63, default=63, display="int"), "System")
 add(dict(key="fav_save", name="SAVE FAV", min=0, max=1, default=0, momentary=True), "System")
 add(dict(key="fav_delete", name="DEL FAV", min=0, max=1, default=0, momentary=True), "System")
+# BANKS page: the bank list's own pages (16 banks each), appended after the favourites
+add(dict(key="bank_page_text", name="BANK PAGE", min=0, max=0, default=0, display="string", poll=True), "Banks")
+add(dict(key="bank_page_prev", name="BANK PAGE -", min=0, max=1, default=0, momentary=True), "Banks")
+add(dict(key="bank_page_next", name="BANK PAGE +", min=0, max=1, default=0, momentary=True), "Banks")
+# BANKS page 2.0: 32 patch tiles a page (four columns of eight: a 128-patch bank is four pages), appended after the bank pager
+for i in (31, 32):
+    add(dict(key="patch_slot_%d" % i, name="PATCH %d" % i, min=0, max=1, default=0, momentary=True, display="string", poll=True), "Banks")
 sections = [{"label": "Browse", "keys": keys_in["Browse"]}, {"label": "Banks", "keys": keys_in["Banks"]}, {"label": "System", "keys": keys_in["System"]}]
 sections += [{"label": s, "keys": keys_in[s]} for s in SEC_ORDER]
 for p in params:

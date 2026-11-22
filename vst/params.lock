@@ -255,3 +255,6 @@ init_patch
 favourite
 fav_save
 fav_delete
+bank_page_text
+bank_page_prev
+bank_page_next

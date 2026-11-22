@@ -1,0 +1,15 @@
+{
+  "name": "Osirus",
+  "manufacturer": "sd88me",
+  "version": "1.0.0",
+  "kind": "instrument",
+  "uid": "OsrS",
+  "numInputs": 0,
+  "numOutputs": 2,
+  "category": "Synth",
+  "file64": "VST/osirus-arm64.so",
+  "description": "Access Virus A/B/C emulation (gearmulator). Needs your own Virus ROM in osirus/roms/.",
+  "author": "sd88me",
+  "url": "https://github.com/sd88me/mpc-vst-osirus",
+  "license": "GPL-3.0-only"
+}

@@ -203,53 +203,67 @@ def row(page, x0, x1, y, items, label_y=None):
 
 
 # ---------------------------------------------------------------- PLAY
-def header(page):
-    """our own title bar: Galaxpel's OSIRUS wordmark (skin/parts/wordmark.png, cut from its main background) and a display bezel with its blue glow,
-    holding the bank and preset steppers"""
+def lcd(page, x0, y0, x1, y1):
+    """Galaxpel's display bezel with its blue glow along the top edge"""
     d = page.d
-    page.panel(8, 6, 1264, 118, "")
-    wm = Image.open(os.path.join(PARTS, "wordmark.png")).convert("RGBA")
-    wm = wm.resize((int(wm.width * 0.72), int(wm.height * 0.72)), Image.LANCZOS)
-    page.im.paste(wm, (34, 12), wm)
-    d.rounded_rectangle((372, 16, 1256, 114), 8, fill=(22, 25, 33), outline=(15, 17, 23), width=3)       # the bezel
-    d.rounded_rectangle((376, 20, 1252, 110), 6, outline=(70, 78, 98), width=1)
-    for i in range(160):                                                                                   # Galaxpel's blue glow along the top edge
-        a = int(150 * (1 - abs(i - 80) / 80))
-        d.line((572 + i * 3, 19, 572 + i * 3 + 3, 19), fill=(60 + a // 4, 100 + a // 2, 200 + a // 4))
-    page.text(404, 20, "BANK", 20, INK_DIM)
-    page.text(764, 20, "PRESET", 20, INK_DIM)
-    # the preset stepper comes first: the data wheel acts on the first focusable control
-    page.widgets.append('stepper w=500 h=44 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (1000, 78 + Y86))
-    page.widgets.append('stepper w=300 h=44 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (550, 78 + Y86))
+    d.rounded_rectangle((x0, y0, x1, y1), 8, fill=(22, 25, 33), outline=(15, 17, 23), width=3)
+    d.rounded_rectangle((x0 + 4, y0 + 4, x1 - 4, y1 - 4), 6, outline=(70, 78, 98), width=1)
+    n = (x1 - x0 - 200) // 3
+    for i in range(n):
+        a = int(150 * (1 - abs(i - n / 2) / (n / 2)))
+        d.line((x0 + 100 + i * 3, y0 + 3, x0 + 100 + i * 3 + 3, y0 + 3), fill=(60 + a // 4, 100 + a // 2, 200 + a // 4))
 
 
-p = Page("PLAY", ["preset", "bank_index", "-", "-", "patch_volume", "panorama", "transpose", "-", "gain", "dsp_clock", "octave_transpose", "rom_index",
-                  "bender_range_up", "bender_range_down", "-", "-"])
-header(p)
-p.panel(8, 132, 520, 214, "PATCH SETTINGS", "patch")
-row(p, 16, 520, 214, [("popup", "key_mode", "KEY MODE", 130), ("knob", "patch_volume", "PATCH VOLUME"), ("knob", "panorama", "PANNING"), ("knob", "transpose", "TRANSPOSE")])
-p.panel(536, 132, 736, 214, "ENGINE", None)
-p.readout(904, 205, "rom_name", "ROM", 704)
-p.readout(722, 262, "loading_status", "STATUS", 340)
-p.readout(1088, 262, "engine_stats", "STATS", 340)
-p.button(722, 318, "all_notes_off", "PANIC")
-p.button(1088, 318, "init_patch", "INIT PATCH")
-p.panel(8, 354, 1264, 266, "OUTPUT", None)
-row(p, 16, 1264, 470, [("knob", "gain", "OUTPUT LEVEL %"), ("knob", "dsp_clock", "DSP CLOCK %"), ("knob", "octave_transpose", "OCTAVE"), ("knob", "rom_index", "ROM NUMBER"),
-                       ("knob", "bender_range_up", "BEND UP"), ("knob", "bender_range_down", "BEND DOWN")])
+def wline(page, s):
+    page.widgets.append(s)
+
+
+p = Page("PLAY", ["preset", "bank_index", "-", "-", "cutoff", "filter1_resonance", "filter1_env_amt", "flt_decay",
+                  "amp_attack", "amp_decay", "amp_sustain", "amp_release", "patch_volume", "panorama", "transpose", "octave_transpose"])
+# one display: ROM and status, BANK and PRESET, the engine's stats; beside it the wordmark over PANIC / RANDOM / INIT PATCH
+p.panel(8, 6, 1264, 192, "")
+wm = Image.open(os.path.join(PARTS, "wordmark.png")).convert("RGBA")
+wm = wm.resize((int(wm.width * 0.72), int(wm.height * 0.72)), Image.LANCZOS)
+p.im.paste(wm, (60, 14), wm)
+lcd(p, 364, 14, 1262, 190)
+p.d.line((380, 132, 1246, 132), fill=(45, 51, 66), width=1)
+p.text(384, 34, "ROM", 18, INK_DIM)
+wline(p, 'readout cx=%d cy=%d w=380 h=34 label="" key=rom_name box=0 align=left fs=22' % (620, 44 + Y86))
+wline(p, 'readout cx=%d cy=%d w=420 h=34 label="" key=loading_status box=0 align=left fs=22' % (1030, 44 + Y86))
+# the preset stepper comes first: the data wheel acts on the first focusable control
+wline(p, 'stepper w=520 h=50 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (990, 96 + Y86))
+wline(p, 'stepper w=340 h=50 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (550, 96 + Y86))
+wline(p, 'readout cx=%d cy=%d w=860 h=34 label="" key=engine_stats box=0 align=left fs=20' % (810, 160 + Y86))
+p.button(70, 150, "all_notes_off", "PANIC", w=104, h=44)
+p.button(294, 150, "init_patch", "INIT", w=104, h=44)          # RANDOM between them (make_tui EXTRA_KEYS)
+p.panel(8, 206, 624, 206, "PATCH", "patch")
+row(p, 16, 632, 288, [("popup", "key_mode", "KEY MODE", 110), ("knob", "patch_volume", "VOLUME"), ("knob", "panorama", "PANNING"),
+                      ("knob", "transpose", "TRANSPOSE"), ("knob", "octave_transpose", "OCTAVE")])
+p.panel(640, 206, 632, 206, "FILTER", None)
+row(p, 648, 1272, 288, [("knob", "cutoff", "CUTOFF"), ("knob", "filter1_resonance", "RESONANCE"), ("knob", "filter1_env_amt", "ENV AMOUNT"),
+                        ("knob", "flt_decay", "FLT DECAY")])
+p.panel(8, 420, 624, 200, "AMP ENV", None)
+row(p, 16, 632, 500, [("knob", "amp_attack", "ATTACK"), ("knob", "amp_decay", "DECAY"), ("knob", "amp_sustain", "SUSTAIN"), ("knob", "amp_release", "RELEASE")])
+p.panel(640, 420, 632, 200, "SETUP", None)
+row(p, 648, 1272, 500, [("knob", "gain", "OUTPUT %"), ("knob", "bender_range_up", "BEND UP"), ("knob", "bender_range_down", "BEND DOWN"),
+                        ("knob", "dsp_clock", "DSP CLOCK %"), ("knob", "rom_index", "ROM")])
 p.done()
 
 # ---------------------------------------------------------------- BANKS
-p = Page("BANKS", ["preset", "bank_index", "patch_page_prev", "patch_page_next"])
-p.widgets.append('stepper w=560 h=44 cx=520 cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (30 + Y86))
-p.widgets.append('stepper w=250 h=44 cx=150 cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (30 + Y86))
-p.button(856, 30, "fav_save", "+FAV", w=92, h=44)
-p.button(954, 30, "fav_delete", "-FAV", w=92, h=44)
-p.widgets.append('stepper w=240 h=44 cx=1120 cy=%d label="" key=patch_page_text get=patch_page_text prev=patch_page_prev next=patch_page_next style=dotmatrix' % (30 + Y86))
-p.panel(8, 62, 262, 558, "BANKS", "patch")
-p.widgets.append('list x=22 y=%d w=236 h=486 cols=1 rows=16 gap=4 th=27 key=bank_slot' % (112 + Y86))
-p.panel(278, 62, 994, 558, "PATCHES", "patch")
-p.widgets.append('list x=292 y=%d w=966 h=486 cols=3 rows=10 gap=6 th=41 key=patch_slot order=cols' % (112 + Y86))
+# Vavra's page: the BANK / PRESET display and big RANDOM / +FAV / -FAV keys on top; the bank list (12 a page) and the patches (four columns
+# of eight: a 128-patch bank is four pages) below, each pager in its panel's title row
+p = Page("BANKS", ["preset", "bank_index", "-", "-", "patch_page_prev", "patch_page_next"])
+lcd(p, 8, 6, 860, 78)
+wline(p, 'stepper w=520 h=50 cx=%d cy=%d label="" key=preset get=preset_name prev=preset_prev next=preset_next style=dotmatrix persistent=1' % (580, 42 + Y86))
+wline(p, 'stepper w=290 h=50 cx=%d cy=%d label="" key=bank_index get=bank_name prev=bank_prev next=bank_next style=dotmatrix persistent=1' % (164, 42 + Y86))
+p.button(1068, 40, "fav_save", "+FAV", w=128, h=58)            # RANDOM at 932 (make_tui EXTRA_KEYS)
+p.button(1204, 40, "fav_delete", "-FAV", w=128, h=58)
+p.panel(8, 86, 310, 534, "BANKS", "patch")
+wline(p, 'stepper w=150 h=30 cx=%d cy=%d label="" key=bank_page_text get=bank_page_text prev=bank_page_prev next=bank_page_next style=dotmatrix' % (238, 104 + Y86))
+wline(p, 'list x=20 y=%d w=286 h=476 cols=1 rows=12 gap=4 th=36 key=bank_slot' % (132 + Y86))
+p.panel(326, 86, 946, 534, "PATCHES", "patch")
+wline(p, 'stepper w=240 h=30 cx=%d cy=%d label="" key=patch_page_text get=patch_page_text prev=patch_page_prev next=patch_page_next style=dotmatrix' % (1142, 104 + Y86))
+wline(p, 'list x=338 y=%d w=922 h=474 cols=4 rows=8 gap=6 th=54 key=patch_slot order=cols' % (132 + Y86))
 p.done()
 
 # ---------------------------------------------------------------- OSC

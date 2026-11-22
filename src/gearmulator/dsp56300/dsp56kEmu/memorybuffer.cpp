@@ -286,7 +286,7 @@ namespace dsp56k
 		auto* p = static_cast<TWord*>(mmap(_ptr, _size * sizeof(TWord), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, m_hFileMapping, _offset * sizeof(TWord)));
 		if(p == _ptr)
 		{
-			mlock(p, _size * sizeof(TWord));
+			// MPC port: no mlock (it made the whole mirror resident, ~64 MB per DSP; nothing swaps on the device anyway)
 			m_mappedSizes.insert(std::make_pair(p, _size));
 			return p;
 		}

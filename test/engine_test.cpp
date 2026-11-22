@@ -4,6 +4,7 @@
 extern "C" {
 #include "engine.h"
 }
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -98,15 +99,39 @@ int main(int argc, char **argv)
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     CHECK(get(e, i, "preset") == "2" && get(e, i, "patch_slot_3_on") == "1", "patch tile 3 -> preset %s \"%s\"", get(e, i, "preset").c_str(), get(e, i, "patch_slot_3").c_str());
     e->set_param(i, "patch_page_next", "1");
-    CHECK(get(e, i, "patch_page_text") == "PAGE 2 / 5" && get(e, i, "patch_slot_1") .rfind("031", 0) == 0, "page 2: %s, first tile \"%s\"", get(e, i, "patch_page_text").c_str(), get(e, i, "patch_slot_1").c_str());
+    CHECK(get(e, i, "patch_page_text") == "PAGE 2 / 4" && get(e, i, "patch_slot_1") .rfind("033", 0) == 0, "page 2: %s, first tile \"%s\"", get(e, i, "patch_page_text").c_str(), get(e, i, "patch_slot_1").c_str());
     e->set_param(i, "patch_slot_1", "1");
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
-    CHECK(get(e, i, "preset") == "30", "tile on page 2 -> preset %s", get(e, i, "preset").c_str());
+    CHECK(get(e, i, "preset") == "32", "tile on page 2 -> preset %s", get(e, i, "preset").c_str());
     e->set_param(i, "bank_slot_1", "1");
     std::this_thread::sleep_for(std::chrono::milliseconds(300));
     CHECK(get(e, i, "bank_index") == "0", "bank tile 1 -> bank %s", get(e, i, "bank_index").c_str());
     e->set_param(i, "patch_page_prev", "1"); e->set_param(i, "patch_page_prev", "1");
-    CHECK(get(e, i, "patch_page_text") == "PAGE 1 / 5", "page clamps at 1: %s", get(e, i, "patch_page_text").c_str());
+    CHECK(get(e, i, "patch_page_text") == "PAGE 1 / 4", "page clamps at 1: %s", get(e, i, "patch_page_text").c_str());
+
+    // more banks than the 16 tiles (OSIRUS_TEST_USER_BANKS=<files in banks/, sub-folders included>): the bank list pages, sub-folder names show
+    if (const char *ub = getenv("OSIRUS_TEST_USER_BANKS")) {
+        const int bc = atoi(get(e, i, "bank_count").c_str()), pages = (bc + 11) / 12;
+        printf("bank_count %d, %s\n", bc, get(e, i, "bank_page_text").c_str());
+        CHECK(bc > 16 && bc >= 6 + atoi(ub), "user banks loaded past 16 tiles: %d (files %s)", bc, ub);
+        char want[32]; snprintf(want, sizeof want, "1 / %d", pages);
+        CHECK(get(e, i, "bank_page_text") == want, "bank page text %s", get(e, i, "bank_page_text").c_str());
+        e->set_param(i, "bank_page_next", "1");
+        snprintf(want, sizeof want, "2 / %d", pages);
+        CHECK(get(e, i, "bank_page_text") == want && !get(e, i, "bank_slot_1").empty(), "page 2: %s, first tile \"%s\"", get(e, i, "bank_page_text").c_str(), get(e, i, "bank_slot_1").c_str());
+        bool sub = false;
+        for (int pg = 0; pg < 2; pg++) {
+            for (int k = 1; k <= 16; k++) { char key[24]; snprintf(key, sizeof key, "bank_slot_%d", k); if (get(e, i, key).find('/') != std::string::npos) sub = true; }
+            e->set_param(i, pg ? "bank_page_next" : "bank_page_prev", "1");
+        }
+        CHECK(sub, "a sub-folder bank is listed as <folder>/<file>");
+        e->set_param(i, "bank_slot_1", "1");
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        CHECK(get(e, i, "bank_index") == "16" && get(e, i, "bank_slot_1_on") == "1", "page 2 tile 1 -> bank %s \"%s\"", get(e, i, "bank_index").c_str(), get(e, i, "bank_name").c_str());
+        e->set_param(i, "bank_index", "0");
+        std::this_thread::sleep_for(std::chrono::milliseconds(400));
+        CHECK(get(e, i, "bank_page_text").rfind("1 /", 0) == 0, "picking bank A follows to page 1: %s", get(e, i, "bank_page_text").c_str());
+    }
 
     // INIT button: the ROM's own init single
     e->set_param(i, "init_patch", "1");

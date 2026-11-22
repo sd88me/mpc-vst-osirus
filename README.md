@@ -4,10 +4,10 @@ An emulation of the Access Virus A, B and C synthesizers as a native VST2 instru
 and kin: aarch64, MPC OS 3.x), with a touchscreen skin and Q-Link control on every page. It runs the original Virus firmware on
 [gearmulator](https://github.com/dsp56300/gearmulator)'s DSP56300 emulator ("Osirus" is gearmulator's name for its Virus emulation).
 
-![The OSC page on an MPC Live III](docs/screenshots/osirus-osc.png)
+![The PLAY page](docs/screenshots/osirus-play.png)
 
-**Status: early release.** Tested on an MPC Live III (MPC OS 3.9.1) with Virus A and C ROMs: sound, skin, banks, presets, Q-Links and knob values work.
-Virus B is untested. Gen1 devices and the Force are not supported (the emulator's JIT has no 32-bit ARM backend).
+**Status: 1.0.0.** A new native plugin with the same name and identity as 0.2.x: projects and Q-Link assignments made with 0.2.x load in it.
+Tested on an MPC Live III with a Virus C ROM: sound, every page, banks, presets, favourites and RANDOM. Virus A and B are untested in 1.0. Gen1 devices and the Force are not supported (the emulator's JIT has no 32-bit ARM backend).
 
 *Osirus is an independent project, not affiliated with or endorsed by Access Music. "Virus" is the name of the instrument it emulates.*
 
@@ -20,15 +20,18 @@ The plugin finds the ROMs when it starts; with several, **ROM NUMBER** on the PL
 SysEx `.mid` or `.syx` dumps in `osirus/banks/` show up as banks after the ROM's own.
 
 ## Using it
-Add *Osirus* to a plugin track. Pages (tabs at the bottom): **PLAY** (title bar with the preset and bank steppers, Patch Settings,
-engine status and an INIT PATCH button, output controls), **BANKS** (bank list and the patches of the current bank, 30 per page),
+Add *Osirus* to a plugin track. Pages (tabs at the bottom): **PLAY** (one display with the ROM, status, bank and preset steppers and the
+DROPOUTS / CPU readout; PANIC, RANDOM and INIT; patch, filter, amp envelope and setup controls), **BANKS** (12 banks a page, the patches of
+the current bank in four columns of eight, RANDOM, +FAV and -FAV),
 **OSC** (oscillators 1-3, mixer, ring mod, sub, unison, portamento), **FILTER**, **ENV**, **LFO 1+2**, **LFO 3 / ARP**, **MOD** (slots 4-6 appear on a Virus B or C only), **FX 1** (distortion, analog boost, punch, phaser, chorus), **FX 2** (equalizer, delay and reverb), **VELOCITY**.
 Every four Q-Links form a column that MPC outlines on the page; every knob shows its value under its label. The data wheel steps the preset.
 ## Your own patches: banks and favourites
 - **Banks.** Put Virus SysEx bank dumps (`.mid` or `.syx`, the single-patch dumps a Virus or a patch editor exports) in `osirus/banks/` inside the plugin folder
-  and reload the plugin. Each file is an extra bank after the ROM's own, named after the file, and it appears on the BANKS page.
-- **Favourites.** On the BANKS page, **+FAV** saves the current patch, including your knob changes, from any bank (ROM or your own), and **-FAV** removes the
-  favourite that is currently loaded. Up to 64 are kept in `osirus/favourites.dat`; they show by name in MPC's PRESET menu, where picking one loads it.
+  and reload the plugin. Sub-folders work (two levels deep): each file is an extra bank after the ROM's own, named `Folder/File`, up to 64 banks in all,
+  paged on the BANKS page.
+- **RANDOM** (PLAY and BANKS) loads a random patch from all loaded banks.
+- **Favourites.** On the BANKS page, **+FAV** opens a keyboard with the patch's name: edit it and press SAVE to store the current patch, including your knob
+  changes, from any bank (ROM or your own). **-FAV** removes the favourite that is currently loaded. Up to 64 are kept in `osirus/favourites.dat`; they show by name in MPC's PRESET menu, where picking one loads it.
   A favourite holds the patch itself, so it still works if the bank file it came from is gone. It remembers the Virus model it was made on (A, B or C):
   the PRESET menu lists it as `Name [C]` on a matching ROM and as `Name <C>` on another, which is not loaded.
 
@@ -48,8 +51,10 @@ headroom range and cannot undo it. A keyboard on any MIDI channel plays Osirus (
 it still crackles, it is clipping. On an MPC Live III a Virus C at 100% uses about half of one fast core.
 
 ## Install
-Osirus comes in one plugin format only: the older format, for plugins listed in `MPC.settings` (64-bit MPCs, MPC OS 3.x). There is no
-SDK-format zip for copying into `VST2 Plugins`.
+Two zips per release, both for 64-bit MPCs (MPC OS 3.x):
+- `Osirus-<version>-mpc-sdk.zip`: one plugin folder to copy into the `VST2 Plugins` folder of a drive (on a Live III, `/nvme/VST2 Plugins/`). Put your ROM in
+  its `VST/osirus/roms/` and restart MPC.
+- `Osirus-<version>-mpc-aarch64.zip`: the installer format below, for plugins listed in `MPC.settings`. It upgrades a 0.2.x install in place.
 
 | How you install it | Plugin folder | How to add your ROM |
 |---|---|---|
@@ -117,7 +122,8 @@ Needs Docker, Python 3 with Pillow, and a checkout of [mpc-vst-plugins](https://
 ./build.sh all       # aarch64 vst/build/aarch64/osirus.so + the skin (cross compiled in Docker)
 tools/preview.sh X   # draw every skin page offline into vst/preview/X/
 ```
-Release zip (no ROM, checked against the catalog rules): `./release.sh <version>`; then `gh release create v<version> dist/Osirus-<version>-mpc-aarch64.zip`.
+1.x: `./build-sdk.sh` builds the plugin folder (`./build-sdk.sh test` runs the offline tests with your ROM), then `tools/package_catalog.sh` makes both
+release zips in `dist/` (no ROM, checked against the catalog rules). The 0.2.x build below is kept for reference.
 Building needs mpc-vst-plugins with the skin tool's `vy=` option (its main branch once PR #550 is merged). `test/engine_test.cpp` boots a ROM from
 `<dir>/roms/` and checks notes, presets, banks, tiles and saved state: `build/x86/osirus_engine_test <dir> [seconds]`.
 
